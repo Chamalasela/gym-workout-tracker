@@ -476,7 +476,9 @@
     input[type="text"], input[type="number"], input[type="date"], select { font-size: 16px; }
     .exercise-title { overflow-wrap: anywhere; }
     #storage-status { margin-bottom: 12px; font-size: 14px; }
-    #cancel-edit, #undo-restore { margin-top: 12px; }
+    #cancel-edit, #undo-restore, #review-legacy { margin-top: 12px; }
+    #file-upload { display: block; width: 100%; font: inherit; font-size: 16px; padding: 10px 0; }
+    .restore-error { margin: 12px 0; color: var(--text-danger); font-size: 14px; line-height: 1.5; }
     /* ── Responsive ── */
     @media (max-width: 480px) {
       .add-set-row { grid-template-columns: 1fr 1fr; }
@@ -593,13 +595,10 @@
         <p style="font-size:13px;color:var(--text-secondary);margin-bottom:1rem;">
           Upload a previously exported JSON file to restore your data.
         </p>
-        <label class="upload-label" for="file-upload">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style="flex-shrink:0;">
-            <path d="M8 2v8M5 5l3-3 3 3M2 12h12" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-          Choose backup file...
-        </label>
-        <input type="file" id="file-upload" accept=".json" style="display:none;" onchange="previewRestore(event)" />
+        <label for="file-upload">Choose backup file</label>
+        <input type="file" id="file-upload" accept=".json,application/json" onchange="previewRestore(event)" />
+        <p id="restore-error" class="restore-error" role="alert" hidden></p>
+        <button id="review-legacy" class="btn-sm" onclick="previewLegacyRestore()" hidden>Review data from the previous version</button>
         <button id="undo-restore" class="btn-sm" onclick="undoRestore()" hidden>Undo last restore</button>
         <div id="restore-preview" style="display:none;margin-top:10px;"></div>
         <p style="font-size:12px;color:var(--text-tertiary);margin-top:10px;">
@@ -634,22 +633,26 @@
     function normalizeData(input) {
       const fail = message => { throw new Error(message); };
       const record = value => value && typeof value === 'object' && !Array.isArray(value);
-      const weight = value => typeof value === 'number' && Number.isFinite(value) && value >= 0;
+      // Existing workouts must remain readable even if an older app accepted
+      // values that today's entry form disallows. Validate new input in addSet.
+      const number = value => typeof value === 'number' && Number.isFinite(value);
+      const weight = value => number(value) && value >= 0;
       const name = value => typeof value === 'string' && value.trim().length > 0;
-      if (!record(input) || ![3,4].includes(input.version)) fail('Unsupported backup version. Use a version 3 or 4 backup.');
+      if (!record(input) || (input.version !== undefined && ![1,2,3,4].includes(input.version))) fail('Unsupported backup version.');
       if (!Array.isArray(input.sessions) || !Array.isArray(input.exercises) || !input.exercises.every(name)) fail('Invalid workouts or exercise list.');
-      if (!record(input.exMeta)) fail('Invalid exercise settings.');
+      if (input.exMeta !== undefined && !record(input.exMeta)) fail('Invalid exercise settings.');
       const out = {version:4, sessions:[], exercises:[...new Set(input.exercises)], exMeta:Object.create(null), draft:Object.create(null), draftDate:localDate(), editingId:null};
       const meta = value => {
         if (!record(value) || typeof value.usesBar !== 'boolean' || !weight(value.barWeight)) fail('Invalid bar settings.');
         return {usesBar:value.usesBar, barWeight:value.barWeight};
       };
       const set = value => {
-        if (!record(value) || !weight(value.plates) || !Number.isInteger(value.reps) || value.reps < 1) fail('Sets need a nonnegative weight and positive whole-number reps.');
-        return {plates:value.plates, reps:value.reps};
+        if (!record(value) || !number(value.plates) || !number(value.reps)) fail('A saved set has unreadable weight or reps.');
+        if (value.total !== undefined && !number(value.total)) fail('Invalid recorded set total.');
+        return {plates:value.plates, reps:value.reps, ...(value.total === undefined ? {} : {total:value.total})};
       };
       const remember = value => { if (!out.exercises.includes(value)) out.exercises.push(value); };
-      for (const [key,value] of Object.entries(input.exMeta)) {
+      for (const [key,value] of Object.entries(input.exMeta || {})) {
         if (!name(key)) fail('Invalid exercise name.');
         out.exMeta[key] = meta(value);
       }
@@ -667,7 +670,9 @@
           return {name:ex.name, ...settings, sets:ex.sets.map(value => {
             const clean = set(value);
             const total = clean.plates + (settings.usesBar ? settings.barWeight : 0);
-            if (!Number.isFinite(total) || !weight(value.total) || Math.abs(total - value.total) > 0.000001) fail('Invalid total weight.');
+            if (!Number.isFinite(total) || !number(value.total)) fail('Invalid total weight.');
+            // The old importer used the recorded total as-is. Keep that history
+            // instead of rejecting every workout when one total differs.
             return {...clean, total:value.total};
           })};
         })};
@@ -700,24 +705,51 @@
       el.textContent = message;
       el.hidden = !message;
     }
+    function readLegacyHistory() {
+      const base = defaults();
+      const read = (key, fallback) => {
+        const raw = localStorage.getItem(key);
+        return raw === null ? fallback : JSON.parse(raw);
+      };
+      return normalizeData({version:3,
+        sessions:read('gym_sessions', []),
+        exercises:read('gym_exercises', base.exercises),
+        exMeta:read('gym_ex_meta', base.exMeta)
+      });
+    }
+    function includeLegacyDraft(history) {
+      const raw = localStorage.getItem('gym_draft');
+      const draft = raw === null ? {} : JSON.parse(raw);
+      if (!draft || typeof draft !== 'object' || Array.isArray(draft)) throw new Error('Invalid saved draft.');
+      const next = clone(history);
+      next.draft = Object.fromEntries(Object.entries(draft).map(([name,block]) => {
+        if (!block || typeof block !== 'object' || !Array.isArray(block.sets)) throw new Error('Invalid saved draft.');
+        const meta = own(history.exMeta,name) ? history.exMeta[name] : {usesBar:false,barWeight:20};
+        return [name,{...meta,sets:block.sets,inputWeight:'',inputReps:'',editIndex:null}];
+      }));
+      return normalizeData(next);
+    }
     function loadState() {
       try {
         lastStored = localStorage.getItem(STORE_KEY);
         if (lastStored !== null) state = normalizeData(JSON.parse(lastStored));
         else {
-          const legacy = key => { const raw = localStorage.getItem(key); return raw === null ? null : JSON.parse(raw); };
-          const base = defaults();
-          const old = {version:3, sessions:legacy('gym_sessions') ?? [], exercises:legacy('gym_exercises') ?? base.exercises, exMeta:legacy('gym_ex_meta') ?? base.exMeta};
-          state = normalizeData(old);
-          const draft = legacy('gym_draft') ?? {};
-          if (!draft || typeof draft !== 'object' || Array.isArray(draft)) throw new Error('Invalid saved draft.');
-          state.draft = Object.fromEntries(Object.entries(draft).map(([name,block]) => [name,{...metaFor(name), sets:block.sets, inputWeight:'',inputReps:'',editIndex:null}]));
-          state = normalizeData(state);
-          if (Object.keys(draft).length) storageMessage('Your previous draft was recovered. Please check its date; the older app did not save draft dates.');
+          // Load history independently: a broken draft must never hide workouts
+          // or leave an invalid draft in memory that crashes the restore UI.
+          state = readLegacyHistory();
+          try {
+            state = includeLegacyDraft(state);
+          } catch (error) {
+            storageBlocked = true;
+            storageMessage('Your history is available, but the unfinished workout could not be read. Original data is preserved. Download recovery data before restoring a backup. Details: ' + error.message);
+            document.getElementById('recover-raw').hidden = false;
+            return;
+          }
+          if (Object.keys(state.draft).length) storageMessage('Your previous draft was recovered. Please check its date; the older app did not save draft dates.');
         }
       } catch (error) {
         storageBlocked = true;
-        storageMessage('Saved data could not be read. It has not been overwritten. Download the recovery data below, then restore a valid backup from Data.');
+        storageMessage('Saved data could not be read. It has not been overwritten. Open Data to review the previous version or restore a backup. Details: ' + error.message);
         document.getElementById('recover-raw').hidden = false;
       }
     }
@@ -806,6 +838,7 @@
       change(next => Object.defineProperty(next.draft, ex, {value:{...metaFor(ex),sets:[],inputWeight:'',inputReps:'',editIndex:null}, enumerable:true, writable:true, configurable:true}));
     }
     function totalWeight(plates, block) { return +(plates + (block.usesBar ? block.barWeight : 0)).toFixed(6); }
+    function recordedTotal(set, block) { return set.total === undefined ? totalWeight(set.plates,block) : set.total; }
     function renderSessionBlocks() {
       const names = Object.keys(state.draft);
       const count = names.reduce((n,name) => n + state.draft[name].sets.length, 0);
@@ -825,7 +858,7 @@
           ${previousEx ? `<p class="previous-sets">Last · ${formatDate(previous.date)}: ${previousEx.sets.map(s => `${s.total} kg × ${s.reps}`).join(' · ')}</p>` : ''}
           <div class="bar-config-row"><label><input type="checkbox" data-field="usesBar" ${block.usesBar ? 'checked' : ''}> Uses a bar</label>
           ${block.usesBar ? `<label>Bar weight (kg) <input class="bar-weight-input" type="number" min="0" step="any" inputmode="decimal" value="${block.barWeight}" data-field="barWeight"></label><span class="plates-note">Enter combined plates on both sides.</span>` : ''}</div>
-          ${block.sets.length ? `<table class="sets-table"><thead><tr><th>Set</th><th>Total kg</th><th>Reps</th><th>Actions</th></tr></thead><tbody>${block.sets.map((s,i) => `<tr><td>${i+1}</td><td>${totalWeight(s.plates,block)}</td><td>${s.reps}</td><td><button class="btn-sm" data-action="edit-set" data-index="${i}" aria-label="Edit set ${i+1}">Edit</button> <button class="btn-danger-sm" data-action="remove-set" data-index="${i}" aria-label="Remove set ${i+1}">×</button></td></tr>`).join('')}</tbody></table>` : ''}
+          ${block.sets.length ? `<table class="sets-table"><thead><tr><th>Set</th><th>Total kg</th><th>Reps</th><th>Actions</th></tr></thead><tbody>${block.sets.map((s,i) => `<tr><td>${i+1}</td><td>${recordedTotal(s,block)}</td><td>${s.reps}</td><td><button class="btn-sm" data-action="edit-set" data-index="${i}" aria-label="Edit set ${i+1}">Edit</button> <button class="btn-danger-sm" data-action="remove-set" data-index="${i}" aria-label="Remove set ${i+1}">×</button></td></tr>`).join('')}</tbody></table>` : ''}
           <div class="add-set-row"><div><label for="w-${index}">${block.usesBar ? 'Combined plates (kg)' : 'Weight (kg)'}</label><input type="number" inputmode="decimal" id="w-${index}" min="0" step="any" data-field="inputWeight" value="${esc(block.inputWeight)}" placeholder="e.g. 30"></div>
           <div><label for="r-${index}">Reps</label><input type="number" inputmode="numeric" id="r-${index}" min="1" step="1" data-field="inputReps" value="${esc(block.inputReps)}" placeholder="e.g. 8"></div>
           <button class="btn-primary" data-action="add-set">${block.editIndex === null ? '+ Set' : 'Update set'}</button></div>
@@ -870,7 +903,7 @@
       if (!filled.length) return;
       const editing = state.editingId !== null;
       if (change(next => {
-        const workout = {id:editing ? next.editingId : crypto.randomUUID(), date:next.draftDate, exercises:filled.map(([name,block]) => ({name, usesBar:block.usesBar, barWeight:block.barWeight, sets:block.sets.map(s => ({...s,total:totalWeight(s.plates,block)}))}))};
+        const workout = {id:editing ? next.editingId : crypto.randomUUID(), date:next.draftDate, exercises:filled.map(([name,block]) => ({name, usesBar:block.usesBar, barWeight:block.barWeight, sets:block.sets.map(s => ({...s,total:recordedTotal(s,block)}))}))};
         if (editing) next.sessions[next.sessions.findIndex(s => String(s.id) === String(next.editingId))] = workout;
         else next.sessions.push(workout);
         next.draft = {}; next.draftDate=localDate(); next.editingId=null;
@@ -881,7 +914,7 @@
       const workout = state.sessions[index];
       if (change(next => {
         next.draftDate=workout.date; next.editingId=workout.id;
-        next.draft=Object.fromEntries(workout.exercises.map(ex => [ex.name,{usesBar:ex.usesBar,barWeight:ex.barWeight,sets:ex.sets.map(s => ({plates:s.plates,reps:s.reps})),inputWeight:'',inputReps:'',editIndex:null}]));
+        next.draft=Object.fromEntries(workout.exercises.map(ex => [ex.name,{usesBar:ex.usesBar,barWeight:ex.barWeight,sets:ex.sets.map(s => ({plates:s.plates,reps:s.reps,total:s.total})),inputWeight:'',inputReps:'',editIndex:null}]));
       })) showTab('log');
     }
     function cancelEdit() {
@@ -989,6 +1022,7 @@
       const sets = state.sessions.reduce((n,s) => n+s.exercises.reduce((m,e)=>m+e.sets.length,0),0);
       const draftSets = Object.values(state.draft).reduce((n,e)=>n+e.sets.length,0);
       document.getElementById('export-summary').textContent = `${state.sessions.length} workout${state.sessions.length === 1 ? '' : 's'} · ${sets} sets · ${draftSets} draft sets`;
+      try { document.getElementById('review-legacy').hidden = localStorage.getItem('gym_sessions') === null && localStorage.getItem('gym_draft') === null; } catch { document.getElementById('review-legacy').hidden = true; }
       try { document.getElementById('undo-restore').hidden = !localStorage.getItem(RECOVERY_KEY); } catch { document.getElementById('undo-restore').hidden=true; }
     }
     function downloadJSON(data, filename) {
@@ -1007,31 +1041,56 @@
         downloadJSON({raw,exportedAt:new Date().toISOString()},`gym-recovery-${localDate()}.json`);
       } catch { toast('Browser storage is unavailable.', 'error'); }
     }
+    function restoreError(message) {
+      const el = document.getElementById('restore-error');
+      el.textContent = message;
+      el.hidden = !message;
+    }
+    function showRestorePreview(clean, source = 'This backup', note = '') {
+      pendingRestore = clean;
+      const sets = clean.sessions.reduce((n,s)=>n+s.exercises.reduce((m,e)=>m+e.sets.length,0),0);
+      const draftSets = Object.values(clean.draft).reduce((n,e)=>n+e.sets.length,0);
+      const el = document.getElementById('restore-preview');
+      el.style.display = 'block';
+      el.innerHTML = `<div class="confirm-box"><p>${esc(source)} contains ${clean.sessions.length} workouts, ${sets} sets, ${clean.exercises.length} exercises, and ${draftSets} draft sets. ${esc(note)} It replaces your history, settings, and active draft. A recovery copy will be kept on this device.</p><div class="confirm-btns"><button class="btn-sm" onclick="cancelRestore()">Cancel</button><button class="btn-danger" onclick="confirmRestore()">Restore backup</button></div></div>`;
+    }
+    function previewLegacyRestore() {
+      cancelRestore();
+      try {
+        const history = readLegacyHistory();
+        let clean = history, note = '';
+        try { clean = includeLegacyDraft(history); }
+        catch { note = 'The unreadable unfinished workout is excluded from this preview; its original data will be preserved for recovery.'; }
+        showRestorePreview(clean, 'Data kept from the previous version', note);
+      } catch (error) { restoreError('Could not read the previous data: ' + error.message); }
+    }
     function previewRestore(event) {
-      pendingRestore=null;
+      pendingRestore = null;
+      restoreError('');
       document.getElementById('restore-preview').replaceChildren();
-      document.getElementById('restore-preview').style.display='none';
-      const sequence=++restoreSequence;
-      const file=event.target.files[0]; if (!file) return;
-      const reader=new FileReader();
-      reader.onload=event => {
+      document.getElementById('restore-preview').style.display = 'none';
+      const sequence = ++restoreSequence;
+      const file = event.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = event => {
         if (sequence !== restoreSequence) return;
-        try {
-          const clean=normalizeData(JSON.parse(event.target.result));
-          pendingRestore=clean;
-          const sets=clean.sessions.reduce((n,s)=>n+s.exercises.reduce((m,e)=>m+e.sets.length,0),0);
-          const draftSets=Object.values(clean.draft).reduce((n,e)=>n+e.sets.length,0);
-          const el=document.getElementById('restore-preview'); el.style.display='block';
-          el.innerHTML=`<div class="confirm-box"><p>This backup contains ${clean.sessions.length} workouts, ${sets} sets, and ${draftSets} draft sets. It replaces your history, settings, and active draft. A recovery copy of readable current data will be kept on this device.</p><div class="confirm-btns"><button class="btn-sm" onclick="cancelRestore()">Cancel</button><button class="btn-danger" onclick="confirmRestore()">Restore backup</button></div></div>`;
-        } catch (error) { toast(error.message || 'Invalid backup.', 'error'); document.getElementById('file-upload').value=''; }
+        try { showRestorePreview(normalizeData(JSON.parse(event.target.result))); }
+        catch (error) {
+          restoreError('Backup was not restored. ' + error.message + ' Your existing data has not changed.');
+          document.getElementById('file-upload').value = '';
+        }
       };
-      reader.onerror=()=> { if(sequence === restoreSequence) { cancelRestore(); toast('Could not read that file.', 'error'); } };
+      reader.onerror = () => {
+        if (sequence === restoreSequence) { cancelRestore(); restoreError('Could not read that file. Try choosing it again from Files.'); }
+      };
       reader.readAsText(file);
     }
     function cancelRestore() {
-      ++restoreSequence; pendingRestore=null;
-      document.getElementById('restore-preview').style.display='none';
-      document.getElementById('file-upload').value='';
+      ++restoreSequence; pendingRestore = null;
+      restoreError('');
+      document.getElementById('restore-preview').style.display = 'none';
+      document.getElementById('file-upload').value = '';
     }
     function confirmRestore() {
       if (!pendingRestore) return;
@@ -1048,7 +1107,7 @@
         lastStored=serialized; state=clean; storageBlocked=false; storageMessage('');
         document.getElementById('recover-raw').hidden=true;
         cancelRestore(); renderAll(); toast('Backup restored');
-      } catch(error) { toast(`Restore stopped: ${error.message}`, 'error'); }
+      } catch(error) { restoreError(`Restore stopped: ${error.message}. Your existing data has not changed.`); }
     }
     function undoRestore() {
       if (!confirm('Return to the data saved before the last restore? Changes made since that restore will be replaced.')) return;
@@ -1082,6 +1141,7 @@
       if (field === 'barWeight' && (!event.target.value.trim() || !Number.isFinite(value) || value < 0)) { toast('Enter a nonnegative bar weight.', 'error'); renderSessionBlocks(); return; }
       change(next => {
         next.draft[name][field]=value;
+        next.draft[name].sets.forEach(set => { delete set.total; });
         Object.defineProperty(next.exMeta,name,{value:{usesBar:next.draft[name].usesBar,barWeight:next.draft[name].barWeight},enumerable:true,writable:true,configurable:true});
       });
     });

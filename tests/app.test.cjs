@@ -61,7 +61,7 @@ test('version 3 imports preserve history, while version 4 also round-trips draft
 });
 test('rejects unsupported and malformed backups before replacing data',()=>{
   const a=app();const invalid=[{...backup,version:5},{...backup,exercises:'bad'},{...backup,sessions:[{...oldWorkout,date:'2026-02-30'}]},{...backup,sessions:[oldWorkout,oldWorkout]}];
-  const badSet=JSON.parse(JSON.stringify(backup));badSet.sessions[0].exercises[0].sets[0].total=999;invalid.push(badSet);
+  const badSet=JSON.parse(JSON.stringify(backup));badSet.sessions[0].exercises[0].sets[0].total='not a weight';invalid.push(badSet);
   for(const value of invalid) assert.throws(()=>a.run(`normalizeData(${JSON.stringify(value)})`));
   assert.equal(a.read('state.sessions').length,0);
 });
@@ -103,4 +103,148 @@ test('local date uses the Colombo calendar at the UTC day boundary',()=>{
 });
 test('draft bar settings survive preference changes and exported totals remain consistent',()=>{
   const a=app();draft(a);set(a);a.run("change(next=>{next.exMeta['Bench press'].barWeight=10;});finishDay()");assert.equal(a.read('state.sessions[0].exercises[0].sets[0].total'),50);
+});
+test('legacy sets accepted by the old app preserve all history and exercises through migration and reload',()=>{
+  const legacy=JSON.parse(JSON.stringify(backup));
+  legacy.exercises.push('Custom exercise');
+  legacy.sessions[0].exercises[0].sets=[
+    {plates:30,reps:0,total:50},
+    {plates:30,reps:-1,total:50},
+    {plates:-30,reps:8,total:-10},
+  ];
+  const rawSessions=JSON.stringify(legacy.sessions);
+  const a=app({gym_sessions:rawSessions,gym_exercises:JSON.stringify(legacy.exercises),gym_ex_meta:JSON.stringify(legacy.exMeta)});
+  assert.equal(a.run('storageBlocked'),false);
+  assert.deepEqual(a.read('state.sessions'),legacy.sessions);
+  assert.deepEqual(a.read('state.exercises'),legacy.exercises);
+  assert.match(a.element('history-list').innerHTML,/Bench press/);
+  assert.equal(a.run('persist(state)'),true);
+  const reloaded=app(Object.fromEntries(a.values));
+  assert.deepEqual(reloaded.read('state.sessions'),legacy.sessions);
+  assert.equal(a.values.get('gym_sessions'),rawSessions);
+  a.run(`previewRestore({target:{files:[{text:${JSON.stringify(JSON.stringify(legacy))}}]}});confirmRestore()`);
+  assert.deepEqual(a.read('state.sessions'),legacy.sessions);
+});
+test('stored historical totals survive backup import and reload without being silently recalculated',()=>{
+  const legacy=JSON.parse(JSON.stringify(backup));
+  legacy.sessions[0].exercises[0].sets[0].total=55;
+  const a=app();
+  a.run(`previewRestore({target:{files:[{text:${JSON.stringify(JSON.stringify(legacy))}}]}})`);
+  assert.deepEqual(a.read('pendingRestore.sessions'),legacy.sessions);
+  a.run('confirmRestore()');
+  const reloaded=app(Object.fromEntries(a.values));
+  assert.equal(reloaded.run('storageBlocked'),false);
+  assert.deepEqual(reloaded.read('state.sessions'),legacy.sessions);
+});
+test('legacy backups without exercise metadata restore without losing session bar settings',()=>{
+  const legacy=JSON.parse(JSON.stringify(backup));
+  delete legacy.exMeta;
+  const a=app();
+  a.run(`previewRestore({target:{files:[{text:${JSON.stringify(JSON.stringify(legacy))}}]}})`);
+  assert.deepEqual(a.read('pendingRestore.sessions'),legacy.sessions);
+  a.run('confirmRestore()');
+  assert.deepEqual(a.read('state.sessions'),legacy.sessions);
+  draft(a);set(a,'10','5');a.run('finishDay()');
+  assert.equal(a.read('state.sessions').length,2);
+});
+test('unversioned backups with the legacy structure restore while unknown explicit versions remain rejected',()=>{
+  const legacy=JSON.parse(JSON.stringify(backup));
+  delete legacy.version;
+  const a=app();
+  a.run(`previewRestore({target:{files:[{text:${JSON.stringify(JSON.stringify(legacy))}}]}})`);
+  assert.deepEqual(a.read('pendingRestore.sessions'),legacy.sessions);
+  a.run('confirmRestore()');
+  assert.deepEqual(a.read('state.sessions'),legacy.sessions);
+  assert.throws(()=>a.run(`normalizeData(${JSON.stringify({...legacy,version:99})})`));
+});
+test('an unreadable legacy draft preserves readable history and catalog and still permits backup restore',()=>{
+  for(const rawDraft of ['{broken',JSON.stringify({'Bench press':{sets:'bad'}}),JSON.stringify({'Bench press':null})]) {
+    const rawSessions=JSON.stringify(backup.sessions);
+    const a=app({gym_sessions:rawSessions,gym_exercises:JSON.stringify(backup.exercises),gym_ex_meta:JSON.stringify(backup.exMeta),gym_draft:rawDraft});
+    assert.deepEqual(a.read('state.sessions'),backup.sessions);
+    assert.deepEqual(a.read('state.exercises'),backup.exercises);
+    assert.deepEqual(a.read('state.draft'),{});
+    assert.match(a.element('history-list').innerHTML,/Bench press/);
+    assert.equal(a.run('storageBlocked'),true);
+    assert.equal(a.element('recover-raw').hidden,false);
+    assert.equal(a.run('persist(state)'),false);
+    assert.ok(!a.values.has('gym_state_v4'));
+    assert.equal(a.values.get('gym_draft'),rawDraft);
+    a.run(`previewRestore({target:{files:[{text:${JSON.stringify(JSON.stringify(backup))}}]}})`);
+    assert.deepEqual(a.read('pendingRestore.sessions'),backup.sessions);
+    a.run('confirmRestore()');
+    assert.equal(a.run('storageBlocked'),false);
+    assert.deepEqual(a.read('state.sessions'),backup.sessions);
+    const recovery=JSON.parse(a.values.get('gym_unreadable_recovery'));
+    assert.equal(recovery.gym_draft,rawDraft);
+    assert.equal(recovery.gym_sessions,rawSessions);
+  }
+});
+test('reviewing previous-version data requires confirmation and preserves current v4 data for undo',()=>{
+  const legacy={
+    gym_sessions:JSON.stringify(backup.sessions),
+    gym_exercises:JSON.stringify(backup.exercises),
+    gym_ex_meta:JSON.stringify(backup.exMeta),
+    gym_draft:JSON.stringify({Squat:{sets:[{plates:40,reps:5}],savedIndividually:false}}),
+  };
+  const a=app(legacy);a.run('finishDay()');
+  const before=a.read('state');
+  assert.equal(before.sessions.length,2);
+  const saved=a.values.get('gym_state_v4');
+  a.run('previewLegacyRestore()');
+  assert.deepEqual(a.read('pendingRestore.sessions'),backup.sessions);
+  assert.equal(a.read('pendingRestore.draft.Squat.sets').length,1);
+  assert.deepEqual(a.read('state'),before);
+  assert.equal(a.values.get('gym_state_v4'),saved);
+  assert.ok(!a.values.has('gym_restore_recovery_v4'));
+  a.run('cancelRestore()');
+  assert.deepEqual(a.read('state'),before);
+  assert.equal(a.values.get('gym_state_v4'),saved);
+  a.run('previewLegacyRestore();confirmRestore()');
+  assert.deepEqual(a.read('state.sessions'),backup.sessions);
+  assert.deepEqual(JSON.parse(a.values.get('gym_restore_recovery_v4')),before);
+  for(const [key,value] of Object.entries(legacy)) assert.equal(a.values.get(key),value);
+  a.run('undoRestore()');
+  assert.deepEqual(a.read('state'),before);
+  for(const [key,value] of Object.entries(legacy)) assert.equal(a.values.get(key),value);
+});
+test('unreadable previous-version data never silently replaces current v4 workouts',()=>{
+  const a=app();draft(a);set(a);a.run('finishDay()');
+  const before=a.read('state'),saved=a.values.get('gym_state_v4');
+  a.values.set('gym_sessions','{broken');
+  a.run('previewLegacyRestore()');
+  assert.equal(a.read('pendingRestore'),null);
+  assert.equal(a.element('restore-error').hidden,false);
+  a.run('confirmRestore()');
+  assert.deepEqual(a.read('state'),before);
+  assert.equal(a.values.get('gym_state_v4'),saved);
+  assert.equal(a.values.get('gym_sessions'),'{broken');
+  a.values.set('gym_sessions',JSON.stringify(backup.sessions));
+  a.values.set('gym_draft',JSON.stringify({'Bench press':{sets:'bad'}}));
+  a.run('previewLegacyRestore()');
+  assert.match(a.element('restore-preview').innerHTML,/unfinished workout is excluded/);
+  assert.deepEqual(a.read('pendingRestore.sessions'),backup.sessions);
+  assert.deepEqual(a.read('pendingRestore.draft'),{});
+  assert.deepEqual(a.read('state'),before);
+  assert.equal(a.values.get('gym_state_v4'),saved);
+  a.run('confirmRestore()');
+  assert.deepEqual(a.read('state.sessions'),backup.sessions);
+  assert.equal(a.values.get('gym_draft'),JSON.stringify({'Bench press':{sets:'bad'}}));
+  a.run('undoRestore()');
+  assert.deepEqual(a.read('state'),before);
+});
+test('editing history preserves recorded totals unless that particular set is changed',()=>{
+  const workout=JSON.parse(JSON.stringify(oldWorkout));
+  workout.exercises[0].sets=[{plates:30,reps:8,total:55},{plates:40,reps:5,total:65}];
+  const a=app({gym_sessions:JSON.stringify([workout])});
+  a.run('editWorkout(0)');
+  const resumed=app(Object.fromEntries(a.values));
+  resumed.run('finishDay()');
+  assert.deepEqual(resumed.read('state.sessions'),[workout]);
+  resumed.run('editWorkout(0);sessionAction("Bench press","edit-set",0)');
+  set(resumed,'40','10');resumed.run('finishDay()');
+  assert.deepEqual(resumed.read('state.sessions[0].exercises[0].sets'),[
+    {plates:40,reps:10,total:60},
+    {plates:40,reps:5,total:65},
+  ]);
 });

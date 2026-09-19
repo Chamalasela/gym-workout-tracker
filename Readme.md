@@ -33,14 +33,16 @@ The app detects a newer save from another tab and asks you to reload rather than
 ## Backups and migration
 
 - **Data → Download dated backup** exports version 4 JSON, including the draft, its date, pending set input, and any in-progress history edits.
-- **Choose backup file** previews validated version 3 (previous app) or version 4 backups. Restore replaces history, preferences, and the draft together.
+- **Choose backup file** previews validated version 4 backups and older backups with the original sessions/exercises structure, including files without a version or exercise metadata. Restore replaces history, preferences, and the draft together.
 - **Undo last restore** returns to the snapshot made before the latest successful restore attempt. It replaces any later edits too. Keep separate JSON files for durable backups; the recovery copy is on the same device.
 - On first use, the app reads the previous `gym_sessions`, `gym_exercises`, `gym_ex_meta`, and `gym_draft` keys. The next successful save uses one `gym_state_v4` record. Legacy keys remain untouched for recovery, but are not kept up to date.
 - The previous app did not store draft dates. Recovered legacy drafts therefore show a reminder to check the date.
 - Invalid saved data is not silently overwritten. A recovery download is offered, and changes are blocked until a valid backup is restored. Raw recovery downloads are for manual recovery, not direct import.
-- Invalid weights, dates, unsupported backup versions, duplicate workout IDs, and inconsistent set totals are rejected before restore.
+- Historical numeric values accepted by the old app, including zero/negative reps or weights, remain readable. Recorded totals are preserved, including when editing other sets. New or explicitly edited sets still require nonnegative weights and positive integer reps; changing bar settings recalculates that exercise's totals.
+- Invalid data structures, dates, unknown backup versions, duplicate workout IDs, and nonnumeric set values are rejected before restore. Restore errors stay visible beside the file picker.
+- **Review data from the previous version** previews the untouched legacy storage. Nothing changes until you confirm. An unreadable old draft is identified and excluded from that recovery preview, while readable history stays accessible; its raw original remains available for recovery.
 
-Your actual iPhone backup should be validated before relying on the updated app; it has not been included in this repository or tested here.
+Regression fixtures cover older accepted data and malformed drafts. A particular personal backup still needs to pass the restore preview before it can be restored.
 
 ## Data and offline behavior
 
@@ -59,4 +61,3 @@ TZ=Asia/Colombo node --test tests/app.test.cjs
 ```
 
 Tests cover atomic saves, failed writes, legacy migration, draft recovery, special exercise names, input validation, backup validation/restore/undo, history editing, cross-tab conflict detection, and local calendar dates. They use a small DOM stub, so browser and iPhone checks remain separate.
-
