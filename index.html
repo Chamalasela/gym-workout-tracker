@@ -305,7 +305,7 @@
       flex-wrap: wrap;
     }
     .bar-config-row label { margin: 0; font-size: 12px; color: var(--text-secondary); }
-    .bar-weight-input { width: 64px !important; font-size: 13px !important; }
+    .bar-weight-input { width: 64px !important; font-size: 16px !important; }
 
     .toggle { position: relative; width: 32px; height: 18px; flex-shrink: 0; }
     .toggle input { opacity: 0; width: 0; height: 0; }
@@ -465,6 +465,18 @@
     .toast.error { background: #791F1F; color: #F7C1C1; }
     .toast.show { opacity: 1; }
 
+    [hidden] { display: none !important; }
+    .previous-sets { padding: 10px 12px; font-size: 13px; color: var(--text-secondary); line-height: 1.5; }
+    .set-tools { padding: 0 12px 10px; }
+    .sets-table td, .sets-table th { padding: 8px; }
+    .sets-table td:last-child { white-space: nowrap; }
+    .history-date-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .toast { white-space: normal; width: max-content; max-width: calc(100vw - 24px); }
+    button { min-height: 40px; }
+    input[type="text"], input[type="number"], input[type="date"], select { font-size: 16px; }
+    .exercise-title { overflow-wrap: anywhere; }
+    #storage-status { margin-bottom: 12px; font-size: 14px; }
+    #cancel-edit, #undo-restore { margin-top: 12px; }
     /* ── Responsive ── */
     @media (max-width: 480px) {
       .add-set-row { grid-template-columns: 1fr 1fr; }
@@ -498,6 +510,9 @@
       </div>
     </div>
 
+    <div id="storage-status" class="confirm-box" role="alert" hidden></div>
+    <button id="recover-raw" class="btn-sm" onclick="exportRawData()" hidden>Download recovery data</button>
+
     <!-- Tabs -->
     <div class="tabs">
       <button class="tab active" onclick="showTab('log')">Log workout</button>
@@ -513,7 +528,7 @@
           <rect x="2" y="3" width="12" height="11" rx="1.5" stroke="currentColor" stroke-width="1.2"/>
           <path d="M5 2v2M11 2v2M2 7h12" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
         </svg>
-        <label>Session date</label>
+        <label for="date">Session date</label>
         <input type="date" id="date" />
       </div>
 
@@ -522,17 +537,18 @@
       <div class="add-exercise-section">
         <div style="font-size:13px;font-weight:600;color:var(--text-secondary);">Add exercise to session</div>
         <div class="add-exercise-bar">
-          <select id="exercise-select"></select>
+          <select id="exercise-select" aria-label="Exercise to add"></select>
           <button class="btn-primary" onclick="addExerciseBlock()">+ Add</button>
         </div>
         <div class="new-ex-row">
-          <input type="text" id="new-exercise" placeholder="Or create a new exercise..." />
+          <input type="text" id="new-exercise" aria-label="New exercise name" placeholder="Or create a new exercise..." />
           <button class="btn-sm" onclick="addNewExercise()">Create</button>
         </div>
       </div>
 
       <div class="day-save-bar" id="day-save-bar" style="display:none;">
-        <button class="finish-btn" id="finish-btn" onclick="finishDay()">Save sessions for the day</button>
+        <button class="finish-btn" id="finish-btn" onclick="finishDay()">Finish workout</button>
+        <button id="cancel-edit" class="btn-sm" onclick="cancelEdit()" hidden>Cancel workout edits</button>
         <div class="day-hint" id="day-hint"></div>
       </div>
     </div>
@@ -540,7 +556,7 @@
     <!-- History -->
     <div id="tab-history" class="section">
       <div class="card" style="margin-bottom:1rem;">
-        <label style="margin-top:0;">Filter by exercise</label>
+        <label for="filter-exercise" style="margin-top:0;">Filter by exercise</label>
         <select id="filter-exercise" onchange="renderHistory()"></select>
       </div>
       <div id="history-list"></div>
@@ -549,7 +565,7 @@
     <!-- Progress -->
     <div id="tab-progress" class="section">
       <div class="card">
-        <label style="margin-top:0;">Exercise</label>
+        <label for="progress-exercise" style="margin-top:0;">Exercise</label>
         <select id="progress-exercise" onchange="renderProgress()"></select>
       </div>
       <div id="progress-stats" class="stat-grid" style="display:none;"></div>
@@ -565,11 +581,11 @@
       <div class="card">
         <div class="card-title">Export backup</div>
         <p style="font-size:13px;color:var(--text-secondary);margin-bottom:1rem;">
-          Download all your workout data as a JSON file. Keep it somewhere safe as a backup.
+          Download your history, active draft, and exercise settings as a JSON file. Keep it somewhere safe as a backup.
         </p>
         <div class="export-summary" id="export-summary"></div>
         <button onclick="exportData()" style="width:100%;padding:10px;border-radius:var(--radius-md);border:0.5px solid var(--border-med);background:transparent;cursor:pointer;font-size:14px;color:var(--text-primary);font-family:var(--font);">
-          Download gym-data.json
+          Download dated backup
         </button>
       </div>
       <div class="card">
@@ -584,327 +600,304 @@
           Choose backup file...
         </label>
         <input type="file" id="file-upload" accept=".json" style="display:none;" onchange="previewRestore(event)" />
+        <button id="undo-restore" class="btn-sm" onclick="undoRestore()" hidden>Undo last restore</button>
         <div id="restore-preview" style="display:none;margin-top:10px;"></div>
         <p style="font-size:12px;color:var(--text-tertiary);margin-top:10px;">
-          This will replace your current data. Export a backup first if needed.
+          Restore replaces your history and draft. Keep a separate backup file for long-term safety.
         </p>
       </div>
     </div>
 
   </div><!-- /page-wrap -->
 
-  <div class="toast" id="toast"></div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
   <script>
-    // ── State ──────────────────────────────────────────────────────────────
-    let sessions  = JSON.parse(localStorage.getItem('gym_sessions')  || '[]');
-    let exercises = JSON.parse(localStorage.getItem('gym_exercises') || '["Bench press","Squat","Deadlift","Overhead press","Barbell row","Pull-up","Bicep curl","Tricep pushdown"]');
-    let exMeta    = JSON.parse(localStorage.getItem('gym_ex_meta')   || '{"Bench press":{"usesBar":true,"barWeight":20},"Squat":{"usesBar":true,"barWeight":20},"Deadlift":{"usesBar":true,"barWeight":20},"Overhead press":{"usesBar":true,"barWeight":20},"Barbell row":{"usesBar":true,"barWeight":20}}');
-    let draft     = JSON.parse(localStorage.getItem('gym_draft')     || '{}');
-    let chart     = null;
-    let pendingRestore = null;
-
-    // ── SVG icons ──────────────────────────────────────────────────────────
-    const ICON_SAVE = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-      <circle cx="7" cy="7" r="6" stroke="currentColor" stroke-width="1.3"/>
-      <path d="M4.5 7l2 2 3-3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
-    </svg>`;
-    const ICON_SAVED = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-      <circle cx="7" cy="7" r="6" fill="white" fill-opacity="0.25"/>
-      <path d="M4.5 7l2 2 3-3" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-    </svg>`;
-    const CHECK_SVG = `<svg width="11" height="11" viewBox="0 0 11 11" fill="none">
-      <path d="M2 5.5l2.5 2.5 4.5-4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-    </svg>`;
-
-    // ── Persistence ────────────────────────────────────────────────────────
-    function save() {
-      localStorage.setItem('gym_sessions',  JSON.stringify(sessions));
-      localStorage.setItem('gym_exercises', JSON.stringify(exercises));
-      localStorage.setItem('gym_ex_meta',   JSON.stringify(exMeta));
+    // All state is committed with one localStorage write. Legacy keys remain untouched.
+    const STORE_KEY = 'gym_state_v4';
+    const RECOVERY_KEY = 'gym_restore_recovery_v4';
+    const DEFAULT_EXERCISES = ['Bench press', 'Squat', 'Deadlift', 'Overhead press', 'Barbell row', 'Pull-up', 'Bicep curl', 'Tricep pushdown'];
+    const own = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
+    const clone = value => JSON.parse(JSON.stringify(value));
+    const esc = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[c]));
+    function localDate(date = new Date()) {
+      return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
     }
-    function saveDraft() { localStorage.setItem('gym_draft', JSON.stringify(draft)); }
-
-    // ── Helpers ────────────────────────────────────────────────────────────
-    function getMeta(ex)           { return exMeta[ex] || { usesBar: false, barWeight: 20 }; }
-    function totalWeight(plates, ex) { const m = getMeta(ex); return m.usesBar ? plates + m.barWeight : plates; }
-    function formatDate(d) { const [y,m,day] = d.split('-'); return `${day}/${m}/${y}`; }
-
-    function toast(msg, type = 'success') {
-      const el = document.getElementById('toast');
-      el.textContent = msg;
-      el.className = 'toast ' + type + ' show';
-      setTimeout(() => el.classList.remove('show'), 2400);
+    function validDate(value) {
+      if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+      const date = new Date(`${value}T12:00:00`);
+      return !Number.isNaN(date.getTime()) && localDate(date) === value;
     }
-
-    // ── Header ─────────────────────────────────────────────────────────────
-    function updateHeader() {
-      const days      = [...new Set(sessions.map(s => s.date))].sort();
-      const totalSets = sessions.reduce((a, s) => a + s.exercises.reduce((b, e) => b + e.sets.length, 0), 0);
-      document.getElementById('header-sub').textContent = days.length
-        ? `${days.length} workout day${days.length > 1 ? 's' : ''} · ${totalSets} total sets logged`
-        : 'No sessions yet — start your first workout below';
-      let streak = 0;
-      const check = new Date();
-      while (true) {
-        const d = check.toISOString().slice(0, 10);
-        if (days.includes(d)) { streak++; check.setDate(check.getDate() - 1); } else break;
+    function defaults() {
+      return {version:4, sessions:[], exercises:[...DEFAULT_EXERCISES], exMeta:Object.fromEntries(DEFAULT_EXERCISES.slice(0,5).map(name => [name,{usesBar:true,barWeight:20}])), draft:{}, draftDate:localDate(), editingId:null};
+    }
+    function normalizeData(input) {
+      const fail = message => { throw new Error(message); };
+      const record = value => value && typeof value === 'object' && !Array.isArray(value);
+      const weight = value => typeof value === 'number' && Number.isFinite(value) && value >= 0;
+      const name = value => typeof value === 'string' && value.trim().length > 0;
+      if (!record(input) || ![3,4].includes(input.version)) fail('Unsupported backup version. Use a version 3 or 4 backup.');
+      if (!Array.isArray(input.sessions) || !Array.isArray(input.exercises) || !input.exercises.every(name)) fail('Invalid workouts or exercise list.');
+      if (!record(input.exMeta)) fail('Invalid exercise settings.');
+      const out = {version:4, sessions:[], exercises:[...new Set(input.exercises)], exMeta:Object.create(null), draft:Object.create(null), draftDate:localDate(), editingId:null};
+      const meta = value => {
+        if (!record(value) || typeof value.usesBar !== 'boolean' || !weight(value.barWeight)) fail('Invalid bar settings.');
+        return {usesBar:value.usesBar, barWeight:value.barWeight};
+      };
+      const set = value => {
+        if (!record(value) || !weight(value.plates) || !Number.isInteger(value.reps) || value.reps < 1) fail('Sets need a nonnegative weight and positive whole-number reps.');
+        return {plates:value.plates, reps:value.reps};
+      };
+      const remember = value => { if (!out.exercises.includes(value)) out.exercises.push(value); };
+      for (const [key,value] of Object.entries(input.exMeta)) {
+        if (!name(key)) fail('Invalid exercise name.');
+        out.exMeta[key] = meta(value);
       }
-      const streakEl = document.getElementById('header-streak');
-      if (streak > 1) {
-        streakEl.style.display = 'flex';
-        document.getElementById('streak-text').textContent = `${streak} day streak`;
-      } else {
-        streakEl.style.display = 'none';
-      }
-    }
-
-    // ── Tabs ───────────────────────────────────────────────────────────────
-    function showTab(t) {
-      document.querySelectorAll('.tab').forEach((b, i) =>
-        b.classList.toggle('active', ['log','history','progress','data'][i] === t));
-      document.querySelectorAll('.section').forEach(s => s.classList.remove('visible'));
-      document.getElementById('tab-' + t).classList.add('visible');
-      if (t === 'history')  renderHistory();
-      if (t === 'progress') renderProgress();
-      if (t === 'data')     renderExportSummary();
-    }
-
-    // ── Selects ────────────────────────────────────────────────────────────
-    function populateSelects() {
-      ['exercise-select','filter-exercise','progress-exercise'].forEach(id => {
-        const el = document.getElementById(id);
-        if (!el) return;
-        const cur = el.value;
-        el.innerHTML = '';
-        if (id === 'filter-exercise') {
-          const o = document.createElement('option');
-          o.value = ''; o.textContent = 'All exercises'; el.appendChild(o);
+      const ids = new Set();
+      out.sessions = input.sessions.map(session => {
+        if (!record(session) || !validDate(session.date) || !Array.isArray(session.exercises) || !session.exercises.length) fail('Invalid workout date or exercises.');
+        if (!(typeof session.id === 'string' && session.id.length || typeof session.id === 'number' && Number.isFinite(session.id))) fail('Invalid workout ID.');
+        if (ids.has(String(session.id))) fail('Duplicate workout IDs.');
+        ids.add(String(session.id));
+        const names = new Set();
+        return {id:session.id, date:session.date, exercises:session.exercises.map(ex => {
+          if (!record(ex) || !name(ex.name) || names.has(ex.name) || !Array.isArray(ex.sets) || !ex.sets.length) fail('Invalid workout exercise.');
+          names.add(ex.name); remember(ex.name);
+          const settings = meta(ex);
+          return {name:ex.name, ...settings, sets:ex.sets.map(value => {
+            const clean = set(value);
+            const total = clean.plates + (settings.usesBar ? settings.barWeight : 0);
+            if (!Number.isFinite(total) || !weight(value.total) || Math.abs(total - value.total) > 0.000001) fail('Invalid total weight.');
+            return {...clean, total:value.total};
+          })};
+        })};
+      });
+      if (input.version === 4) {
+        if (!validDate(input.draftDate) || !record(input.draft)) fail('Invalid draft date or workout.');
+        out.draftDate = input.draftDate;
+        if (input.editingId !== null && !ids.has(String(input.editingId))) fail('The workout being edited is missing.');
+        out.editingId = input.editingId;
+        for (const [key,value] of Object.entries(input.draft)) {
+          if (!name(key) || !record(value) || !Array.isArray(value.sets)) fail('Invalid draft exercise.');
+          remember(key);
+          if (value.inputWeight !== undefined && typeof value.inputWeight !== 'string' || value.inputReps !== undefined && typeof value.inputReps !== 'string') fail('Invalid draft input.');
+          const editIndex = value.editIndex ?? null;
+          if (editIndex !== null && (!Number.isInteger(editIndex) || editIndex < 0 || editIndex >= value.sets.length)) fail('Invalid set being edited.');
+          out.draft[key] = {...meta(value), sets:value.sets.map(set), inputWeight:value.inputWeight || '', inputReps:value.inputReps || '', editIndex};
         }
-        exercises.forEach(ex => {
-          const o = document.createElement('option');
-          o.value = ex; o.textContent = ex; el.appendChild(o);
+      }
+      return out;
+    }
+    let state = defaults();
+    let storageBlocked = false;
+    let chart = null;
+    let pendingRestore = null;
+    let restoreSequence = 0;
+    let toastTimer;
+    let lastStored = null;
+    function storageMessage(message) {
+      const el = document.getElementById('storage-status');
+      el.textContent = message;
+      el.hidden = !message;
+    }
+    function loadState() {
+      try {
+        lastStored = localStorage.getItem(STORE_KEY);
+        if (lastStored !== null) state = normalizeData(JSON.parse(lastStored));
+        else {
+          const legacy = key => { const raw = localStorage.getItem(key); return raw === null ? null : JSON.parse(raw); };
+          const base = defaults();
+          const old = {version:3, sessions:legacy('gym_sessions') ?? [], exercises:legacy('gym_exercises') ?? base.exercises, exMeta:legacy('gym_ex_meta') ?? base.exMeta};
+          state = normalizeData(old);
+          const draft = legacy('gym_draft') ?? {};
+          if (!draft || typeof draft !== 'object' || Array.isArray(draft)) throw new Error('Invalid saved draft.');
+          state.draft = Object.fromEntries(Object.entries(draft).map(([name,block]) => [name,{...metaFor(name), sets:block.sets, inputWeight:'',inputReps:'',editIndex:null}]));
+          state = normalizeData(state);
+          if (Object.keys(draft).length) storageMessage('Your previous draft was recovered. Please check its date; the older app did not save draft dates.');
+        }
+      } catch (error) {
+        storageBlocked = true;
+        storageMessage('Saved data could not be read. It has not been overwritten. Download the recovery data below, then restore a valid backup from Data.');
+        document.getElementById('recover-raw').hidden = false;
+      }
+    }
+    function persist(next) {
+      if (storageBlocked) { toast('Restore a valid backup before making changes.', 'error'); return false; }
+      try {
+        if (localStorage.getItem(STORE_KEY) !== lastStored) {
+          storageMessage('Another tab changed your workouts. Reload this page before making more changes.');
+          return false;
+        }
+        const clean = normalizeData(next);
+        const serialized = JSON.stringify(clean);
+        localStorage.setItem(STORE_KEY, serialized);
+        lastStored = serialized;
+        state = clean;
+        storageMessage('');
+        return true;
+      } catch (error) {
+        storageMessage('Could not save changes on this device. Your previous saved data is intact. Export a backup and free browser storage before retrying.');
+        return false;
+      }
+    }
+    function change(update, render = true) {
+      const next = clone(state);
+      update(next);
+      if (!persist(next)) return false;
+      if (render) renderAll();
+      return true;
+    }
+    function metaFor(ex) { return own(state.exMeta, ex) ? state.exMeta[ex] : {usesBar:false, barWeight:20}; }
+    function formatDate(date) { const [y,m,d] = date.split('-'); return `${d}/${m}/${y}`; }
+    function toast(message, type = 'success') {
+      const el = document.getElementById('toast');
+      el.textContent = message; el.className = `toast ${type} show`;
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => el.classList.remove('show'), 3500);
+    }
+    function updateHeader() {
+      const dates = new Set(state.sessions.map(s => s.date));
+      const sets = state.sessions.reduce((count,s) => count + s.exercises.reduce((n,e) => n + e.sets.length,0),0);
+      document.getElementById('header-sub').textContent = `${dates.size} workout day${dates.size === 1 ? '' : 's'} · ${sets} sets logged`;
+      const today = new Date();
+      let weekly = 0;
+      for (let i=0;i<7;i++) { if (dates.has(localDate(today))) weekly++; today.setDate(today.getDate()-1); }
+      document.getElementById('header-streak').style.display = weekly ? 'flex' : 'none';
+      document.getElementById('streak-text').textContent = `${weekly} day${weekly === 1 ? '' : 's'} / 7`;
+    }
+    function showTab(tab) {
+      document.querySelectorAll('.tab').forEach((el,i) => el.classList.toggle('active',['log','history','progress','data'][i] === tab));
+      document.querySelectorAll('.section').forEach(el => el.classList.remove('visible'));
+      document.getElementById(`tab-${tab}`).classList.add('visible');
+      if (tab === 'history') renderHistory();
+      if (tab === 'progress') renderProgress();
+      if (tab === 'data') renderExportSummary();
+    }
+    const alphabetical = (a, b) => a.localeCompare(b, 'en', { sensitivity: 'base', numeric: true });
+    function populateSelects() {
+      const sortedExercises = [...state.exercises].sort(alphabetical);
+      ['exercise-select','filter-exercise','progress-exercise'].forEach(id => {
+        const el = document.getElementById(id), current = el.value;
+        el.replaceChildren();
+        const names = id === 'filter-exercise' ? ['',...sortedExercises] : sortedExercises;
+        names.forEach(name => {
+          const option = document.createElement('option');
+          option.value = name; option.textContent = name || 'All exercises'; el.appendChild(option);
         });
-        if (cur && exercises.includes(cur)) el.value = cur;
+        if (names.includes(current)) el.value = current;
       });
     }
-
-    // ── Exercises ──────────────────────────────────────────────────────────
-    function addNewExercise() {
-      const inp = document.getElementById('new-exercise');
-      const val = inp.value.trim();
-      if (!val || exercises.includes(val)) { inp.focus(); return; }
-      exercises.push(val);
-      if (!exMeta[val]) exMeta[val] = { usesBar: false, barWeight: 20 };
-      save(); populateSelects();
-      document.getElementById('exercise-select').value = val;
-      inp.value = '';
-      toast('Exercise created');
+    function renderAll() {
+      document.getElementById('date').value = state.draftDate;
+      populateSelects(); renderSessionBlocks(); renderHistory(); renderExportSummary(); updateHeader();
     }
-
+    function addNewExercise() {
+      const input = document.getElementById('new-exercise'), name = input.value.trim();
+      if (!name) { input.focus(); return; }
+      if (state.exercises.some(ex => ex.toLowerCase() === name.toLowerCase())) { toast('That exercise already exists.', 'error'); return; }
+      if (change(next => {
+        next.exercises.push(name);
+        Object.defineProperty(next.exMeta, name, {value:{usesBar:false,barWeight:20}, enumerable:true, writable:true, configurable:true});
+      })) { document.getElementById('exercise-select').value = name; input.value = ''; toast('Exercise created'); }
+    }
     function addExerciseBlock() {
       const ex = document.getElementById('exercise-select').value;
-      if (!ex) return;
-      if (draft[ex]) { toast('Already added to this session', 'error'); return; }
-      draft[ex] = { sets: [], savedIndividually: false };
-      saveDraft(); renderSessionBlocks();
+      if (!ex || own(state.draft, ex)) { toast('Exercise already added.', 'error'); return; }
+      change(next => Object.defineProperty(next.draft, ex, {value:{...metaFor(ex),sets:[],inputWeight:'',inputReps:'',editIndex:null}, enumerable:true, writable:true, configurable:true}));
     }
-
-    function toggleBar(ex) {
-      if (!exMeta[ex]) exMeta[ex] = { usesBar: false, barWeight: 20 };
-      exMeta[ex].usesBar = !exMeta[ex].usesBar;
-      save(); renderSessionBlocks();
-    }
-
-    function updateBarWeight(ex, val) {
-      const w = parseFloat(val);
-      if (isNaN(w) || w < 0) return;
-      if (!exMeta[ex]) exMeta[ex] = { usesBar: false, barWeight: 20 };
-      exMeta[ex].barWeight = w; save(); renderSessionBlocks();
-    }
-
-    function saveExercise(ex) {
-      if (!draft[ex] || !draft[ex].sets.length) { toast('Add at least one set first', 'error'); return; }
-      draft[ex].savedIndividually = true;
-      saveDraft(); renderSessionBlocks(); toast(`${ex} saved`);
-    }
-
-    // ── Session blocks ─────────────────────────────────────────────────────
+    function totalWeight(plates, block) { return +(plates + (block.usesBar ? block.barWeight : 0)).toFixed(6); }
     function renderSessionBlocks() {
-      const container = document.getElementById('session-exercises');
-      const exList    = Object.keys(draft);
-      const dayBar    = document.getElementById('day-save-bar');
-      dayBar.style.display = exList.length ? 'block' : 'none';
-
-      const savedCount = exList.filter(ex => draft[ex].savedIndividually).length;
-      const hint = document.getElementById('day-hint');
-      if (exList.length) {
-        hint.textContent = savedCount === exList.length
-          ? 'All exercises saved — ready to commit for the day.'
-          : `${savedCount} of ${exList.length} exercise${exList.length > 1 ? 's' : ''} saved individually.`;
-      }
-      document.getElementById('finish-btn').disabled = savedCount === 0;
-      if (!exList.length) { container.innerHTML = ''; return; }
-
-      container.innerHTML = exList.map(ex => {
-        const block  = draft[ex];
-        const isSaved = block.savedIndividually;
-        const meta   = getMeta(ex);
-        const sets   = block.sets;
-
-        const rows = sets.map((s, i) => {
-          const total = totalWeight(s.plates, ex);
-          const platesNote = meta.usesBar
-            ? `<div class="plates-note">${s.plates} + ${meta.barWeight} kg</div>` : '';
-          return `<tr>
-            <td style="width:36px;"><span class="set-num">S${i+1}</span></td>
-            <td><div class="total-weight">${total} kg</div>${platesNote}</td>
-            <td>${s.reps} reps</td>
-            <td>${isSaved ? '' : `<button class="btn-danger-sm" onclick="removeSet('${ex}',${i})">×</button>`}</td>
-          </tr>`;
-        }).join('');
-
-        const barBadge   = meta.usesBar ? `<span class="bar-badge">bar ${meta.barWeight} kg</span>` : '';
-        const savedBadge = isSaved ? `<span class="saved-badge">${CHECK_SVG} Saved</span>` : '';
-
-        const saveBtn = !isSaved
-          ? `<button class="save-ex-btn" onclick="saveExercise('${ex}')" title="Save this exercise">
-               ${ICON_SAVE} Save exercise
-             </button>`
-          : `<button class="save-ex-btn done" disabled>${ICON_SAVED} Saved</button>`;
-
-        const barConfig = !isSaved ? `<div class="bar-config-row">
-          <label class="toggle">
-            <input type="checkbox" ${meta.usesBar ? 'checked' : ''} onchange="toggleBar('${ex}')" />
-            <span class="toggle-slider"></span>
-          </label>
-          <label style="cursor:pointer;" onclick="toggleBar('${ex}')">Uses a bar</label>
-          ${meta.usesBar ? `
-            <div style="display:flex;align-items:center;gap:5px;margin-left:8px;">
-              <input type="number" class="bar-weight-input" value="${meta.barWeight}" min="1" step="0.5"
-                onchange="updateBarWeight('${ex}',this.value)" />
-              <label>kg</label>
-            </div>` : ''}
-        </div>` : '';
-
-        const addSetRow = !isSaved ? `<div class="add-set-row">
-          <div>
-            <label>${meta.usesBar ? 'Plates (kg)' : 'Weight (kg)'}</label>
-            <input type="number" id="w-${ex}" placeholder="${meta.usesBar ? 'e.g. 30' : 'e.g. 60'}" min="0" step="0.5" />
-          </div>
-          <div>
-            <label>Reps</label>
-            <input type="number" id="r-${ex}" placeholder="e.g. 8" min="1" step="1" />
-          </div>
-          <button class="btn-primary" onclick="addSet('${ex}')" style="margin-bottom:1px;">+ Set</button>
-        </div>` : '';
-
-        return `<div class="exercise-block${isSaved ? ' saved' : ''}">
-          <div class="exercise-header${isSaved ? ' saved' : ''}">
-            <div class="ex-header-left">
-              <span class="exercise-title">${ex}</span>
-              ${barBadge}${savedBadge}
-            </div>
-            <div class="ex-header-right">
-              ${saveBtn}
-              ${!isSaved ? `<button class="btn-sm" onclick="removeExerciseBlock('${ex}')">Remove</button>` : ''}
-            </div>
-          </div>
-          ${barConfig}
-          ${sets.length ? `
-            <table class="sets-table">
-              <thead><tr><th>Set</th><th>Total weight</th><th>Reps</th><th></th></tr></thead>
-              <tbody>${rows}</tbody>
-            </table>` : ''}
-          ${addSetRow}
+      const names = Object.keys(state.draft);
+      const count = names.reduce((n,name) => n + state.draft[name].sets.length, 0);
+      document.getElementById('day-save-bar').style.display = names.length || state.editingId !== null ? 'block' : 'none';
+      document.getElementById('finish-btn').disabled = count === 0;
+      document.getElementById('finish-btn').textContent = state.editingId !== null ? 'Save workout changes' : 'Finish workout';
+      document.getElementById('cancel-edit').hidden = state.editingId === null;
+      document.getElementById('day-hint').textContent = `${count} set${count === 1 ? '' : 's'} saved on this device. Finish to add them to history.`;
+      // Keep each original index so actions still target the correct exercise after sorting.
+      const sortedBlocks = names.map((name,index) => ({name,index})).sort((a,b) => alphabetical(a.name,b.name));
+      document.getElementById('session-exercises').innerHTML = sortedBlocks.map(({name,index}) => {
+        const block = state.draft[name];
+        const previous = [...state.sessions].filter(s => String(s.id) !== String(state.editingId) && s.date <= state.draftDate).sort((a,b) => b.date.localeCompare(a.date)).find(s => s.exercises.some(e => e.name === name));
+        const previousEx = previous?.exercises.find(e => e.name === name);
+        return `<div class="exercise-block" data-ex-index="${index}">
+          <div class="exercise-header"><div class="ex-header-left"><span class="exercise-title">${esc(name)}</span></div><button class="btn-sm" data-action="remove-exercise">Remove</button></div>
+          ${previousEx ? `<p class="previous-sets">Last · ${formatDate(previous.date)}: ${previousEx.sets.map(s => `${s.total} kg × ${s.reps}`).join(' · ')}</p>` : ''}
+          <div class="bar-config-row"><label><input type="checkbox" data-field="usesBar" ${block.usesBar ? 'checked' : ''}> Uses a bar</label>
+          ${block.usesBar ? `<label>Bar weight (kg) <input class="bar-weight-input" type="number" min="0" step="any" inputmode="decimal" value="${block.barWeight}" data-field="barWeight"></label><span class="plates-note">Enter combined plates on both sides.</span>` : ''}</div>
+          ${block.sets.length ? `<table class="sets-table"><thead><tr><th>Set</th><th>Total kg</th><th>Reps</th><th>Actions</th></tr></thead><tbody>${block.sets.map((s,i) => `<tr><td>${i+1}</td><td>${totalWeight(s.plates,block)}</td><td>${s.reps}</td><td><button class="btn-sm" data-action="edit-set" data-index="${i}" aria-label="Edit set ${i+1}">Edit</button> <button class="btn-danger-sm" data-action="remove-set" data-index="${i}" aria-label="Remove set ${i+1}">×</button></td></tr>`).join('')}</tbody></table>` : ''}
+          <div class="add-set-row"><div><label for="w-${index}">${block.usesBar ? 'Combined plates (kg)' : 'Weight (kg)'}</label><input type="number" inputmode="decimal" id="w-${index}" min="0" step="any" data-field="inputWeight" value="${esc(block.inputWeight)}" placeholder="e.g. 30"></div>
+          <div><label for="r-${index}">Reps</label><input type="number" inputmode="numeric" id="r-${index}" min="1" step="1" data-field="inputReps" value="${esc(block.inputReps)}" placeholder="e.g. 8"></div>
+          <button class="btn-primary" data-action="add-set">${block.editIndex === null ? '+ Set' : 'Update set'}</button></div>
+          <div class="set-tools">${block.editIndex !== null ? '<button class="btn-sm" data-action="cancel-set">Cancel edit</button>' : block.sets.length ? '<button class="btn-sm" data-action="repeat-set">Repeat last set</button>' : ''}</div>
         </div>`;
       }).join('');
     }
-
-    function addSet(ex) {
-      const plates = parseFloat(document.getElementById('w-' + ex).value);
-      const r      = parseInt(document.getElementById('r-'  + ex).value);
-      if (isNaN(plates) || isNaN(r)) { toast('Enter weight and reps', 'error'); return; }
-      draft[ex].sets.push({ plates, reps: r });
-      saveDraft(); renderSessionBlocks();
-      setTimeout(() => { const el = document.getElementById('w-' + ex); if (el) el.focus(); }, 50);
+    function addSet(name) {
+      const index = Object.keys(state.draft).indexOf(name);
+      const w = document.getElementById(`w-${index}`).value, r = document.getElementById(`r-${index}`).value;
+      const plates = Number(w), reps = Number(r);
+      if (!w.trim() || !r.trim() || !Number.isFinite(plates) || plates < 0 || !Number.isInteger(reps) || reps < 1) { toast('Use a nonnegative weight and positive whole-number reps.', 'error'); return; }
+      if (change(next => {
+        const block = next.draft[name];
+        if (block.editIndex === null) block.sets.push({plates,reps}); else block.sets[block.editIndex] = {plates,reps};
+        block.editIndex = null; block.inputWeight = ''; block.inputReps = '';
+      })) document.getElementById(`w-${index}`).focus();
     }
-
-    function removeSet(ex, idx) {
-      draft[ex].sets.splice(idx, 1); saveDraft(); renderSessionBlocks();
-    }
-
-    function removeExerciseBlock(ex) {
-      delete draft[ex]; saveDraft(); renderSessionBlocks();
-    }
-
-    function finishDay() {
-      const date = document.getElementById('date').value;
-      if (!date) { toast('Pick a date', 'error'); return; }
-      const toCommit = Object.keys(draft).filter(ex => draft[ex].savedIndividually && draft[ex].sets.length);
-      if (!toCommit.length) { toast('Save at least one exercise first', 'error'); return; }
-      sessions.push({
-        id: Date.now(), date,
-        exercises: toCommit.map(ex => ({
-          name: ex,
-          usesBar:   getMeta(ex).usesBar,
-          barWeight: getMeta(ex).barWeight,
-          sets: draft[ex].sets.map(s => ({
-            plates: s.plates, reps: s.reps, total: totalWeight(s.plates, ex)
-          }))
-        }))
+    function sessionAction(name, action, index) {
+      const block = state.draft[name];
+      if (action === 'add-set') return addSet(name);
+      if (action === 'remove-exercise' && block.sets.length && !confirm('Remove this exercise and its sets from the draft?')) return;
+      if (action === 'remove-set' && !confirm('Remove this set?')) return;
+      change(next => {
+        const item = next.draft[name];
+        if (action === 'remove-exercise') delete next.draft[name];
+        if (action === 'edit-set') { item.editIndex=index; item.inputWeight=String(item.sets[index].plates); item.inputReps=String(item.sets[index].reps); }
+        if (action === 'cancel-set') { item.editIndex=null; item.inputWeight=''; item.inputReps=''; }
+        if (action === 'remove-set') {
+          item.sets.splice(index,1);
+          if (item.editIndex === index) { item.editIndex=null; item.inputWeight=''; item.inputReps=''; }
+          else if (item.editIndex !== null && item.editIndex > index) item.editIndex--;
+        }
+        if (action === 'repeat-set') item.sets.push({...item.sets[item.sets.length-1]});
       });
-      save(); draft = {}; saveDraft(); renderSessionBlocks(); updateHeader();
-      toast('Day saved!');
     }
-
-    // ── History ────────────────────────────────────────────────────────────
+    function finishDay() {
+      if (!validDate(state.draftDate)) { toast('Pick a valid date.', 'error'); return; }
+      const entries = Object.entries(state.draft);
+      if (entries.some(([,b]) => b.editIndex !== null || b.inputWeight !== '' || b.inputReps !== '')) { toast('Add or clear the entered set before finishing.', 'error'); return; }
+      const filled = entries.filter(([,block]) => block.sets.length);
+      if (!filled.length) return;
+      const editing = state.editingId !== null;
+      if (change(next => {
+        const workout = {id:editing ? next.editingId : crypto.randomUUID(), date:next.draftDate, exercises:filled.map(([name,block]) => ({name, usesBar:block.usesBar, barWeight:block.barWeight, sets:block.sets.map(s => ({...s,total:totalWeight(s.plates,block)}))}))};
+        if (editing) next.sessions[next.sessions.findIndex(s => String(s.id) === String(next.editingId))] = workout;
+        else next.sessions.push(workout);
+        next.draft = {}; next.draftDate=localDate(); next.editingId=null;
+      })) toast(editing ? 'Workout updated' : 'Workout saved');
+    }
+    function editWorkout(index) {
+      if (Object.keys(state.draft).length || state.editingId !== null) { toast('Finish or cancel the current workout before editing history.', 'error'); return; }
+      const workout = state.sessions[index];
+      if (change(next => {
+        next.draftDate=workout.date; next.editingId=workout.id;
+        next.draft=Object.fromEntries(workout.exercises.map(ex => [ex.name,{usesBar:ex.usesBar,barWeight:ex.barWeight,sets:ex.sets.map(s => ({plates:s.plates,reps:s.reps})),inputWeight:'',inputReps:'',editIndex:null}]));
+      })) showTab('log');
+    }
+    function cancelEdit() {
+      if (confirm('Discard these draft edits? The original workout will stay in history.')) change(next => {next.draft={}; next.editingId=null; next.draftDate=localDate();});
+    }
     function renderHistory() {
-      const filter   = document.getElementById('filter-exercise').value;
-      let   filtered = [...sessions].sort((a, b) => b.date.localeCompare(a.date));
-      if (filter) {
-        filtered = filtered
-          .map(s => ({ ...s, exercises: s.exercises.filter(e => e.name === filter) }))
-          .filter(s => s.exercises.length);
-      }
-      const el = document.getElementById('history-list');
-      if (!filtered.length) {
-        el.innerHTML = `<div class="empty-state">
-          <svg viewBox="0 0 24 24" fill="none">
-            <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2
-                     M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"
-              stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-          </svg>
-          <p>No sessions logged yet</p>
-        </div>`;
-        return;
-      }
-      el.innerHTML = filtered.map(s => `
-        <div class="card" style="margin-bottom:0.875rem;">
-          <div class="history-date-heading">${formatDate(s.date)}</div>
-          ${s.exercises.map(e => `
-            <div class="history-ex-name">
-              ${e.name}
-              ${e.usesBar
-                ? `<span style="font-size:11px;font-weight:400;background:var(--amber-50);color:var(--amber-800);padding:1px 6px;border-radius:100px;">bar ${e.barWeight}kg</span>`
-                : ''}
-            </div>
-            <div class="set-pill-row">
-              ${e.sets.map((set, i) => `
-                <div class="set-pill">
-                  S${i+1} <span>${set.total}kg × ${set.reps}</span>
-                  ${e.usesBar ? `<span class="plates-tiny"> (${set.plates}+${e.barWeight})</span>` : ''}
-                </div>`).join('')}
-            </div>`).join('')}
-        </div>`).join('');
+      const filter = document.getElementById('filter-exercise').value;
+      const list = state.sessions.map((s,index) => ({...s,index})).sort((a,b) => b.date.localeCompare(a.date)).filter(s => !filter || s.exercises.some(e => e.name === filter));
+      document.getElementById('history-list').innerHTML = list.length ? list.map(s => `<div class="card"><div class="history-date-heading">${formatDate(s.date)} <button class="btn-sm" data-edit-workout="${s.index}">Edit workout</button></div>${s.exercises.filter(e => !filter || e.name === filter).sort((a,b) => alphabetical(a.name,b.name)).map(e => `<div class="history-ex-name">${esc(e.name)}</div><div class="set-pill-row">${e.sets.map((set,i) => `<div class="set-pill">S${i+1} <span>${set.total} kg × ${set.reps}</span></div>`).join('')}</div>`).join('')}</div>`).join('') : '<div class="empty-state"><p>No workouts found</p></div>';
     }
-
     // ── Progress ───────────────────────────────────────────────────────────
     function renderProgress() {
       const ex = document.getElementById('progress-exercise').value;
-      if (!ex) return;
+      if (!ex) { document.getElementById('progress-stats').style.display='none'; document.getElementById('chart-card').style.display='none'; document.getElementById('progress-empty').textContent='No exercise data yet'; return; }
       const byDate = {};
-      sessions.forEach(s => {
+      state.sessions.forEach(s => {
         const ed = s.exercises.find(e => e.name === ex);
         if (!ed || !ed.sets.length) return;
         const mx = Math.max(...ed.sets.map(s => s.total));
@@ -949,7 +942,7 @@
           <div class="stat-label">Total gain</div>
         </div>`;
 
-      if (dates.length >= 2) {
+      if (dates.length >= 2 && typeof Chart !== 'undefined') {
         chartCard.style.display = 'block';
         if (chart) chart.destroy();
         const isDark = window.matchMedia('(prefers-color-scheme:dark)').matches;
@@ -989,73 +982,116 @@
             }
           }
         });
-      } else { chartCard.style.display = 'none'; }
+      } else { chartCard.style.display = 'none'; if (dates.length >= 2) emptyEl.textContent = 'Chart unavailable offline. Your workout statistics are still shown above.'; }
     }
 
-    // ── Data tab ───────────────────────────────────────────────────────────
     function renderExportSummary() {
-      const totalSets = sessions.reduce((a, s) => a + s.exercises.reduce((b, e) => b + e.sets.length, 0), 0);
-      document.getElementById('export-summary').textContent =
-        `${sessions.length} sessions · ${totalSets} total sets · ${exercises.length} exercises`;
+      const sets = state.sessions.reduce((n,s) => n+s.exercises.reduce((m,e)=>m+e.sets.length,0),0);
+      const draftSets = Object.values(state.draft).reduce((n,e)=>n+e.sets.length,0);
+      document.getElementById('export-summary').textContent = `${state.sessions.length} workout${state.sessions.length === 1 ? '' : 's'} · ${sets} sets · ${draftSets} draft sets`;
+      try { document.getElementById('undo-restore').hidden = !localStorage.getItem(RECOVERY_KEY); } catch { document.getElementById('undo-restore').hidden=true; }
     }
-
+    function downloadJSON(data, filename) {
+      const blob = new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
+      const url = URL.createObjectURL(blob), link=document.createElement('a');
+      link.href=url; link.download=filename; document.body.appendChild(link); link.click(); link.remove();
+      setTimeout(()=>URL.revokeObjectURL(url),10000);
+    }
     function exportData() {
-      const data = { version: 3, exportedAt: new Date().toISOString(), sessions, exercises, exMeta };
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-      const url  = URL.createObjectURL(blob);
-      const a    = document.createElement('a');
-      a.href = url; a.download = 'gym-data.json'; a.click();
-      URL.revokeObjectURL(url);
-      toast('Backup downloaded!');
+      downloadJSON({...state,exportedAt:new Date().toISOString()},`gym-backup-${localDate()}-${Date.now()}.json`);
+      toast('Backup export started. Keep the file in a safe place.');
     }
-
+    function exportRawData() {
+      try {
+        const raw = Object.fromEntries([STORE_KEY,RECOVERY_KEY,'gym_unreadable_recovery','gym_sessions','gym_exercises','gym_ex_meta','gym_draft'].map(key=>[key,localStorage.getItem(key)]));
+        downloadJSON({raw,exportedAt:new Date().toISOString()},`gym-recovery-${localDate()}.json`);
+      } catch { toast('Browser storage is unavailable.', 'error'); }
+    }
     function previewRestore(event) {
-      const file = event.target.files[0]; if (!file) return;
-      const reader = new FileReader();
-      reader.onload = (e) => {
+      pendingRestore=null;
+      document.getElementById('restore-preview').replaceChildren();
+      document.getElementById('restore-preview').style.display='none';
+      const sequence=++restoreSequence;
+      const file=event.target.files[0]; if (!file) return;
+      const reader=new FileReader();
+      reader.onload=event => {
+        if (sequence !== restoreSequence) return;
         try {
-          const data = JSON.parse(e.target.result);
-          if (!data.exercises) throw new Error('Invalid');
-          pendingRestore = data;
-          const totalSets = (data.sessions || []).reduce((a, s) => a + s.exercises.reduce((b, e) => b + e.sets.length, 0), 0);
-          document.getElementById('restore-preview').style.display = 'block';
-          document.getElementById('restore-preview').innerHTML = `
-            <div class="confirm-box">
-              <p>This file has ${(data.sessions||[]).length} sessions and ${totalSets} total sets.
-                 Your current data will be replaced. Are you sure?</p>
-              <div class="confirm-btns">
-                <button class="btn-sm" onclick="cancelRestore()">Cancel</button>
-                <button class="btn-danger" onclick="confirmRestore()">Yes, restore</button>
-              </div>
-            </div>`;
-        } catch {
-          toast('Invalid backup file', 'error');
-          event.target.value = '';
-        }
+          const clean=normalizeData(JSON.parse(event.target.result));
+          pendingRestore=clean;
+          const sets=clean.sessions.reduce((n,s)=>n+s.exercises.reduce((m,e)=>m+e.sets.length,0),0);
+          const draftSets=Object.values(clean.draft).reduce((n,e)=>n+e.sets.length,0);
+          const el=document.getElementById('restore-preview'); el.style.display='block';
+          el.innerHTML=`<div class="confirm-box"><p>This backup contains ${clean.sessions.length} workouts, ${sets} sets, and ${draftSets} draft sets. It replaces your history, settings, and active draft. A recovery copy of readable current data will be kept on this device.</p><div class="confirm-btns"><button class="btn-sm" onclick="cancelRestore()">Cancel</button><button class="btn-danger" onclick="confirmRestore()">Restore backup</button></div></div>`;
+        } catch (error) { toast(error.message || 'Invalid backup.', 'error'); document.getElementById('file-upload').value=''; }
       };
+      reader.onerror=()=> { if(sequence === restoreSequence) { cancelRestore(); toast('Could not read that file.', 'error'); } };
       reader.readAsText(file);
     }
-
     function cancelRestore() {
-      pendingRestore = null;
-      document.getElementById('restore-preview').style.display = 'none';
-      document.getElementById('file-upload').value = '';
+      ++restoreSequence; pendingRestore=null;
+      document.getElementById('restore-preview').style.display='none';
+      document.getElementById('file-upload').value='';
     }
-
     function confirmRestore() {
       if (!pendingRestore) return;
-      sessions  = pendingRestore.sessions  || [];
-      exercises = pendingRestore.exercises;
-      if (pendingRestore.exMeta) exMeta = pendingRestore.exMeta;
-      save(); populateSelects(); renderExportSummary(); updateHeader(); cancelRestore();
-      toast('Data restored!');
+      try {
+        const clean=normalizeData(pendingRestore);
+        if (localStorage.getItem(STORE_KEY) !== lastStored) throw new Error('Another tab changed the data. Reload before restoring.');
+        if (storageBlocked) {
+          // Keep exact unreadable values before replacing them, for manual recovery.
+          const raw=Object.fromEntries([STORE_KEY,'gym_sessions','gym_exercises','gym_ex_meta','gym_draft'].map(key=>[key,localStorage.getItem(key)]));
+          localStorage.setItem('gym_unreadable_recovery',JSON.stringify(raw));
+        } else localStorage.setItem(RECOVERY_KEY,JSON.stringify(state));
+        const serialized=JSON.stringify(clean);
+        localStorage.setItem(STORE_KEY,serialized);
+        lastStored=serialized; state=clean; storageBlocked=false; storageMessage('');
+        document.getElementById('recover-raw').hidden=true;
+        cancelRestore(); renderAll(); toast('Backup restored');
+      } catch(error) { toast(`Restore stopped: ${error.message}`, 'error'); }
     }
-
-    // ── Init ───────────────────────────────────────────────────────────────
-    document.getElementById('date').value = new Date().toISOString().slice(0, 10);
-    populateSelects();
-    renderSessionBlocks();
-    updateHeader();
+    function undoRestore() {
+      if (!confirm('Return to the data saved before the last restore? Changes made since that restore will be replaced.')) return;
+      try {
+        const raw=localStorage.getItem(RECOVERY_KEY);
+        if (!raw) return;
+        if (persist(normalizeData(JSON.parse(raw)))) {
+          renderAll(); toast('Previous data recovered');
+        }
+      } catch { toast('The recovery copy could not be read.', 'error'); }
+    }
+    document.getElementById('date').addEventListener('change',event => {
+      if (!validDate(event.target.value) || !change(next => {next.draftDate=event.target.value;},false)) event.target.value=state.draftDate;
+    });
+    document.getElementById('session-exercises').addEventListener('click',event => {
+      const button=event.target.closest('[data-action]'); if (!button) return;
+      const name=Object.keys(state.draft)[Number(button.closest('[data-ex-index]').dataset.exIndex)];
+      sessionAction(name,button.dataset.action,Number(button.dataset.index));
+    });
+    document.getElementById('session-exercises').addEventListener('input',event => {
+      const field=event.target.dataset.field;
+      if (!['inputWeight','inputReps'].includes(field)) return;
+      const name=Object.keys(state.draft)[Number(event.target.closest('[data-ex-index]').dataset.exIndex)];
+      change(next => { next.draft[name][field]=event.target.value; },false);
+    });
+    document.getElementById('session-exercises').addEventListener('change',event => {
+      const field=event.target.dataset.field;
+      if (!['usesBar','barWeight'].includes(field)) return;
+      const name=Object.keys(state.draft)[Number(event.target.closest('[data-ex-index]').dataset.exIndex)];
+      const value=field === 'usesBar' ? event.target.checked : Number(event.target.value);
+      if (field === 'barWeight' && (!event.target.value.trim() || !Number.isFinite(value) || value < 0)) { toast('Enter a nonnegative bar weight.', 'error'); renderSessionBlocks(); return; }
+      change(next => {
+        next.draft[name][field]=value;
+        Object.defineProperty(next.exMeta,name,{value:{usesBar:next.draft[name].usesBar,barWeight:next.draft[name].barWeight},enumerable:true,writable:true,configurable:true});
+      });
+    });
+    document.getElementById('history-list').addEventListener('click',event => {
+      const button=event.target.closest('[data-edit-workout]'); if(button) editWorkout(Number(button.dataset.editWorkout));
+    });
+    window.addEventListener('storage',event => {
+      if (event.key === STORE_KEY || event.key === null) storageMessage('Workout data changed in another tab. Reload before making changes.');
+    });
+    loadState(); renderAll();
   </script>
 </body>
 </html>
