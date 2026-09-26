@@ -248,3 +248,142 @@ test('editing history preserves recorded totals unless that particular set is ch
     {plates:40,reps:5,total:65},
   ]);
 });
+test('only the logging exercise dropdown sorts alphabetically while the catalog and other dropdowns retain their order',()=>{
+  const exercises=['Z press','Bench press','assisted row'];
+  const a=app({gym_exercises:JSON.stringify(exercises)});
+  assert.deepEqual(a.element('exercise-select').children.map(option=>option.value),['assisted row','Bench press','Z press']);
+  assert.deepEqual(a.element('filter-exercise').children.map(option=>option.value),['',...exercises]);
+  assert.deepEqual(a.element('progress-exercise').children.map(option=>option.value),exercises);
+  assert.deepEqual(a.read('state.exercises'),exercises);
+});
+test('draft cards and completed workout exercises retain the order they were added',()=>{
+  const names=['Squat','Bench press','Deadlift'];
+  const a=app();
+  for(const name of names) { draft(a,name);set(a,'30','8',name); }
+  const draftHTML=a.element('session-exercises').innerHTML;
+  assert.ok(draftHTML.indexOf('Squat')<draftHTML.indexOf('Bench press'));
+  assert.ok(draftHTML.indexOf('Bench press')<draftHTML.indexOf('Deadlift'));
+  assert.deepEqual(a.read('Object.keys(state.draft)'),names);
+  a.run('finishDay()');
+  assert.deepEqual(a.read('state.sessions[0].exercises.map(ex=>ex.name)'),names);
+  const historyHTML=a.element('history-list').innerHTML;
+  assert.ok(historyHTML.indexOf('Squat')<historyHTML.indexOf('Bench press'));
+  assert.ok(historyHTML.indexOf('Bench press')<historyHTML.indexOf('Deadlift'));
+  a.run('editWorkout(0)');
+  assert.deepEqual(a.read('Object.keys(state.draft)'),names);
+});
+test('new sets and repeats stop at three while editing and removing remain available',()=>{
+  const a=app();draft(a);
+  set(a,'20','10');set(a,'30','8');set(a,'40','6');
+  const original=a.read('state.draft["Bench press"].sets');
+  set(a,'50','5');a.run('sessionAction("Bench press","repeat-set",0)');
+  assert.deepEqual(a.read('state.draft["Bench press"].sets'),original);
+  a.run('sessionAction("Bench press","edit-set",0)');set(a,'25','12');
+  assert.equal(a.read('state.draft["Bench press"].sets').length,3);
+  assert.deepEqual(a.read('state.draft["Bench press"].sets[0]'),{plates:25,reps:12});
+  a.run('sessionAction("Bench press","remove-set",1);sessionAction("Bench press","repeat-set",0)');
+  assert.deepEqual(a.read('state.draft["Bench press"].sets'),[{plates:25,reps:12},{plates:40,reps:6},{plates:40,reps:6}]);
+  a.run('sessionAction("Bench press","repeat-set",0);finishDay()');
+  assert.equal(a.read('state.sessions[0].exercises[0].sets').length,3);
+});
+test('legacy workouts with more than three sets survive restore, editing, reload and finish without truncation',()=>{
+  const legacy=JSON.parse(JSON.stringify(backup));
+  legacy.sessions[0].exercises[0].sets=Array.from({length:5},(_,i)=>({plates:20+i*5,reps:10-i,total:40+i*5}));
+  const a=app();
+  a.run(`previewRestore({target:{files:[{text:${JSON.stringify(JSON.stringify(legacy))}}]}});confirmRestore()`);
+  assert.deepEqual(a.read('state.sessions'),legacy.sessions);
+  assert.match(a.element('history-list').innerHTML,/S5/);
+  a.run('editWorkout(0)');
+  set(a,'60','5');a.run('sessionAction("Bench press","repeat-set",0)');
+  assert.equal(a.read('state.draft["Bench press"].sets').length,5);
+  const reloaded=app(Object.fromEntries(a.values));
+  assert.equal(reloaded.read('state.draft["Bench press"].sets').length,5);
+  reloaded.run('finishDay()');
+  assert.deepEqual(reloaded.read('state.sessions'),legacy.sessions);
+});
+test('legacy drafts above three sets remain intact and permit editing or removing existing sets',()=>{
+  const sets=Array.from({length:5},(_,i)=>({plates:20+i*5,reps:10-i}));
+  const rawDraft=JSON.stringify({'Bench press':{sets,savedIndividually:false}});
+  const a=app({gym_draft:rawDraft});
+  assert.deepEqual(a.read('state.draft["Bench press"].sets'),sets);
+  assert.equal(a.run('persist(state)'),true);
+  const reloaded=app(Object.fromEntries(a.values));
+  reloaded.run('finishDay()');
+  assert.deepEqual(reloaded.read('state.sessions[0].exercises[0].sets'),sets.map(s=>({...s,total:s.plates+20})));
+  assert.equal(a.values.get('gym_draft'),rawDraft);
+  a.run('sessionAction("Bench press","edit-set",4)');set(a,'60','5');
+  assert.equal(a.read('state.draft["Bench press"].sets').length,5);
+  assert.deepEqual(a.read('state.draft["Bench press"].sets[4]'),{plates:60,reps:5});
+  a.run('sessionAction("Bench press","remove-set",0);finishDay()');
+  assert.equal(a.read('state.sessions[0].exercises[0].sets').length,4);
+  assert.equal(a.read('state.sessions[0].exercises[0].sets[3].total'),80);
+  assert.equal(a.values.get('gym_draft'),rawDraft);
+});
+test('expanding or collapsing a card is view-only and never changes saved workout data',()=>{
+  const a=app();draft(a);draft(a,'Squat');
+  const before=a.read('state'),stored=a.values.get('gym_state_v4');
+  a.fail();
+  a.run('sessionAction("Bench press","toggle-exercise",0)');
+  assert.equal(a.run('expandedExercise'),'Bench press');
+  a.run('sessionAction("Bench press","toggle-exercise",0)');
+  assert.equal(a.run('expandedExercise'),null);
+  a.run('sessionAction("Squat","toggle-exercise",0)');
+  assert.equal(a.run('expandedExercise'),'Squat');
+  assert.deepEqual(a.read('state'),before);
+  assert.equal(a.values.get('gym_state_v4'),stored);
+  assert.equal(a.element('storage-status').textContent,'');
+});
+test('partially typed inputs survive switching cards and remain protected from finish',()=>{
+  const a=app();draft(a);set(a);draft(a,'Squat');set(a,'40','5','Squat');
+  const input=a.element('session-exercises').listeners.input;
+  for(const [field,value] of [['inputWeight','27.5'],['inputReps','12']]) {
+    input({target:{dataset:{field},value,closest:()=>({dataset:{exIndex:'0'}})}});
+  }
+  const stored=a.values.get('gym_state_v4');
+  a.run('sessionAction("Bench press","toggle-exercise",0);sessionAction("Squat","toggle-exercise",0);sessionAction("Bench press","toggle-exercise",0)');
+  assert.equal(a.read('state.draft["Bench press"].inputWeight'),'27.5');
+  assert.equal(a.read('state.draft["Bench press"].inputReps'),'12');
+  assert.match(a.element('session-exercises').innerHTML,/value="27\.5"/);
+  assert.equal(a.values.get('gym_state_v4'),stored);
+  a.run('sessionAction("Squat","toggle-exercise",0);finishDay()');
+  assert.equal(a.read('state.sessions').length,0);
+  const reloaded=app(Object.fromEntries(a.values));
+  assert.equal(reloaded.read('state.draft["Bench press"].inputWeight'),'27.5');
+  assert.equal(reloaded.run('expandedExercise'),'Bench press');
+});
+test('saving a third set advances to the next incomplete exercise and collapses when all are complete',()=>{
+  const a=app();draft(a);set(a);set(a);draft(a,'Squat');
+  set(a,'40','5','Squat');set(a,'40','5','Squat');set(a,'40','5','Squat');
+  draft(a,'Deadlift');set(a,'50','5','Deadlift');
+  a.run('sessionAction("Bench press","toggle-exercise",0)');set(a);
+  assert.equal(a.run('expandedExercise'),'Deadlift');
+  assert.equal(a.read('state.draft["Bench press"].sets').length,3);
+  set(a,'50','5','Deadlift');a.run('sessionAction("Deadlift","repeat-set",0)');
+  assert.equal(a.run('expandedExercise'),null);
+  assert.deepEqual(a.read('Object.values(state.draft).map(block=>block.sets.length)'),[3,3,3]);
+});
+test('a failed third-set save keeps the existing two sets and the current exercise open',()=>{
+  for(const repeat of [false,true]) {
+    const a=app();draft(a);set(a);set(a);draft(a,'Squat');
+    a.run('sessionAction("Bench press","toggle-exercise",0)');
+    const before=a.read('state'),stored=a.values.get('gym_state_v4');
+    a.fail();
+    if(repeat) a.run('sessionAction("Bench press","repeat-set",0)');
+    else set(a,'40','6');
+    assert.equal(a.run('expandedExercise'),'Bench press');
+    assert.deepEqual(a.read('state'),before);
+    assert.equal(a.values.get('gym_state_v4'),stored);
+    assert.equal(a.read('state.draft["Bench press"].sets').length,2);
+    assert.match(a.element('storage-status').textContent,/Could not save/);
+    if(!repeat) { assert.equal(a.element('w-0').value,'40');assert.equal(a.element('r-0').value,'6'); }
+  }
+});
+
+test('switching cards does not discard on-screen input when its autosave fails',()=>{
+  const a=app();draft(a);draft(a,'Squat');
+  const before=a.read('state');const saved=a.values.get('gym_state_v4');
+  a.run(`document.querySelectorAll = selector => selector.includes('data-field') ? [{value:'42.5',dataset:{field:'inputWeight'},closest(){return {dataset:{exIndex:'1'}};}}] : []`);
+  a.fail();a.run('sessionAction("Bench press","toggle-exercise",0)');
+  assert.equal(a.run('expandedExercise'),'Squat');assert.deepEqual(a.read('state'),before);assert.equal(a.values.get('gym_state_v4'),saved);
+  assert.match(a.element('storage-status').textContent,/Could not save/);
+});

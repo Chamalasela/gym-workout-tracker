@@ -479,6 +479,28 @@
     #cancel-edit, #undo-restore, #review-legacy { margin-top: 12px; }
     #file-upload { display: block; width: 100%; font: inherit; font-size: 16px; padding: 10px 0; }
     .restore-error { margin: 12px 0; color: var(--text-danger); font-size: 14px; line-height: 1.5; }
+    .exercise-toggle {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px; width: 100%; border: 0; padding: 12px 14px;
+      text-align: left; font-family: var(--font); color: var(--text-primary);
+      background: var(--bg-secondary); cursor: pointer;
+    }
+    .exercise-toggle:focus-visible { outline: 2px solid var(--teal-400); outline-offset: -3px; }
+    .exercise-heading { display: grid; gap: 4px; min-width: 0; }
+    .exercise-summary { font-size: 12px; color: var(--text-secondary); }
+    .exercise-chevron { font-size: 22px; color: var(--text-secondary); }
+    .exercise-block.complete { border-color: var(--teal-400); }
+    .exercise-block.complete .exercise-summary { color: var(--teal-600); }
+    .exercise-footer { padding: 10px 12px; border-top: 0.5px solid var(--border-light); }
+    .new-exercise-details { margin-top: 10px; font-size: 13px; color: var(--text-secondary); }
+    .new-exercise-details summary { cursor: pointer; padding: 8px 0; }
+    .day-save-bar {
+      position: sticky; bottom: 0; z-index: 10;
+      padding: 10px 0 calc(10px + env(safe-area-inset-bottom));
+      background: var(--bg-tertiary); border-top: 1px solid var(--border-med);
+    }
+    .toast { bottom: calc(110px + env(safe-area-inset-bottom)); }
+    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
     /* ── Responsive ── */
     @media (max-width: 480px) {
       .add-set-row { grid-template-columns: 1fr 1fr; }
@@ -534,19 +556,19 @@
         <input type="date" id="date" />
       </div>
 
-      <div id="session-exercises"></div>
-
       <div class="add-exercise-section">
         <div style="font-size:13px;font-weight:600;color:var(--text-secondary);">Add exercise to session</div>
         <div class="add-exercise-bar">
           <select id="exercise-select" aria-label="Exercise to add"></select>
           <button class="btn-primary" onclick="addExerciseBlock()">+ Add</button>
         </div>
-        <div class="new-ex-row">
+        <details class="new-exercise-details"><summary>Create a new exercise</summary><div class="new-ex-row">
           <input type="text" id="new-exercise" aria-label="New exercise name" placeholder="Or create a new exercise..." />
           <button class="btn-sm" onclick="addNewExercise()">Create</button>
-        </div>
+        </div></details>
       </div>
+
+      <div id="session-exercises"></div>
 
       <div class="day-save-bar" id="day-save-bar" style="display:none;">
         <button class="finish-btn" id="finish-btn" onclick="finishDay()">Finish workout</button>
@@ -613,6 +635,7 @@
 
   <script>
     // All state is committed with one localStorage write. Legacy keys remain untouched.
+    const MAX_SETS = 3;
     const STORE_KEY = 'gym_state_v4';
     const RECOVERY_KEY = 'gym_restore_recovery_v4';
     const DEFAULT_EXERCISES = ['Bench press', 'Squat', 'Deadlift', 'Overhead press', 'Barbell row', 'Pull-up', 'Bicep curl', 'Tricep pushdown'];
@@ -696,6 +719,8 @@
     let state = defaults();
     let storageBlocked = false;
     let chart = null;
+    // Card expansion is presentation-only; saved workouts and backups are unchanged.
+    let expandedExercise;
     let pendingRestore = null;
     let restoreSequence = 0;
     let toastTimer;
@@ -811,7 +836,7 @@
       ['exercise-select','filter-exercise','progress-exercise'].forEach(id => {
         const el = document.getElementById(id), current = el.value;
         el.replaceChildren();
-        const names = id === 'filter-exercise' ? ['',...sortedExercises] : sortedExercises;
+        const names = id === 'exercise-select' ? sortedExercises : id === 'filter-exercise' ? ['',...state.exercises] : state.exercises;
         names.forEach(name => {
           const option = document.createElement('option');
           option.value = name; option.textContent = name || 'All exercises'; el.appendChild(option);
@@ -835,65 +860,139 @@
     function addExerciseBlock() {
       const ex = document.getElementById('exercise-select').value;
       if (!ex || own(state.draft, ex)) { toast('Exercise already added.', 'error'); return; }
-      change(next => Object.defineProperty(next.draft, ex, {value:{...metaFor(ex),sets:[],inputWeight:'',inputReps:'',editIndex:null}, enumerable:true, writable:true, configurable:true}));
+      if (change(next => Object.defineProperty(next.draft, ex, {value:{...metaFor(ex),sets:[],inputWeight:'',inputReps:'',editIndex:null}, enumerable:true, writable:true, configurable:true}),false)) {
+        expandedExercise = ex; renderAll(); focusExercise(ex);
+      }
     }
     function totalWeight(plates, block) { return +(plates + (block.usesBar ? block.barWeight : 0)).toFixed(6); }
     function recordedTotal(set, block) { return set.total === undefined ? totalWeight(set.plates,block) : set.total; }
     function renderSessionBlocks() {
       const names = Object.keys(state.draft);
       const count = names.reduce((n,name) => n + state.draft[name].sets.length, 0);
+      if (expandedExercise === undefined || expandedExercise !== null && !own(state.draft,expandedExercise)) {
+        expandedExercise = names.find(name => {
+          const block = state.draft[name];
+          return block.editIndex !== null || block.inputWeight || block.inputReps;
+        }) ?? names.find(name => state.draft[name].sets.length < MAX_SETS) ?? null;
+      }
       document.getElementById('day-save-bar').style.display = names.length || state.editingId !== null ? 'block' : 'none';
       document.getElementById('finish-btn').disabled = count === 0;
       document.getElementById('finish-btn').textContent = state.editingId !== null ? 'Save workout changes' : 'Finish workout';
       document.getElementById('cancel-edit').hidden = state.editingId === null;
-      document.getElementById('day-hint').textContent = `${count} set${count === 1 ? '' : 's'} saved on this device. Finish to add them to history.`;
-      // Keep each original index so actions still target the correct exercise after sorting.
-      const sortedBlocks = names.map((name,index) => ({name,index})).sort((a,b) => alphabetical(a.name,b.name));
-      document.getElementById('session-exercises').innerHTML = sortedBlocks.map(({name,index}) => {
+      document.getElementById('day-hint').textContent = `${count} set${count === 1 ? '' : 's'} saved on this device`;
+      document.getElementById('session-exercises').innerHTML = names.map((name,index) => {
         const block = state.draft[name];
+        const isOpen = name === expandedExercise;
+        const atLimit = block.sets.length >= MAX_SETS;
+        const isEditing = block.editIndex !== null;
+        const hasInput = block.inputWeight !== '' || block.inputReps !== '';
+        const summary = block.sets.length > MAX_SETS ? `${block.sets.length} sets saved` : `${block.sets.length} / ${MAX_SETS} sets${atLimit ? ' · Complete' : ''}`;
         const previous = [...state.sessions].filter(s => String(s.id) !== String(state.editingId) && s.date <= state.draftDate).sort((a,b) => b.date.localeCompare(a.date)).find(s => s.exercises.some(e => e.name === name));
         const previousEx = previous?.exercises.find(e => e.name === name);
-        return `<div class="exercise-block" data-ex-index="${index}">
-          <div class="exercise-header"><div class="ex-header-left"><span class="exercise-title">${esc(name)}</span></div><button class="btn-sm" data-action="remove-exercise">Remove</button></div>
-          ${previousEx ? `<p class="previous-sets">Last · ${formatDate(previous.date)}: ${previousEx.sets.map(s => `${s.total} kg × ${s.reps}`).join(' · ')}</p>` : ''}
-          <div class="bar-config-row"><label><input type="checkbox" data-field="usesBar" ${block.usesBar ? 'checked' : ''}> Uses a bar</label>
-          ${block.usesBar ? `<label>Bar weight (kg) <input class="bar-weight-input" type="number" min="0" step="any" inputmode="decimal" value="${block.barWeight}" data-field="barWeight"></label><span class="plates-note">Enter combined plates on both sides.</span>` : ''}</div>
-          ${block.sets.length ? `<table class="sets-table"><thead><tr><th>Set</th><th>Total kg</th><th>Reps</th><th>Actions</th></tr></thead><tbody>${block.sets.map((s,i) => `<tr><td>${i+1}</td><td>${recordedTotal(s,block)}</td><td>${s.reps}</td><td><button class="btn-sm" data-action="edit-set" data-index="${i}" aria-label="Edit set ${i+1}">Edit</button> <button class="btn-danger-sm" data-action="remove-set" data-index="${i}" aria-label="Remove set ${i+1}">×</button></td></tr>`).join('')}</tbody></table>` : ''}
-          <div class="add-set-row"><div><label for="w-${index}">${block.usesBar ? 'Combined plates (kg)' : 'Weight (kg)'}</label><input type="number" inputmode="decimal" id="w-${index}" min="0" step="any" data-field="inputWeight" value="${esc(block.inputWeight)}" placeholder="e.g. 30"></div>
-          <div><label for="r-${index}">Reps</label><input type="number" inputmode="numeric" id="r-${index}" min="1" step="1" data-field="inputReps" value="${esc(block.inputReps)}" placeholder="e.g. 8"></div>
-          <button class="btn-primary" data-action="add-set">${block.editIndex === null ? '+ Set' : 'Update set'}</button></div>
-          <div class="set-tools">${block.editIndex !== null ? '<button class="btn-sm" data-action="cancel-set">Cancel edit</button>' : block.sets.length ? '<button class="btn-sm" data-action="repeat-set">Repeat last set</button>' : ''}</div>
+        return `<div class="exercise-block${atLimit ? ' complete' : ''}" data-ex-index="${index}">
+          <button class="exercise-toggle" id="exercise-toggle-${index}" data-action="toggle-exercise" aria-expanded="${isOpen}" aria-controls="exercise-body-${index}">
+            <span class="exercise-heading"><span class="exercise-title">${esc(name)}</span><span class="exercise-summary">${summary}${isEditing ? ' · Editing set' : hasInput ? ' · Set in progress' : ''}</span></span>
+            <span class="exercise-chevron" aria-hidden="true">${isOpen ? '−' : '+'}</span>
+          </button>
+          <div id="exercise-body-${index}" class="exercise-body" ${isOpen ? '' : 'hidden'}>
+            ${previousEx ? `<p class="previous-sets">Last · ${formatDate(previous.date)}: ${previousEx.sets.map(s => `${s.total} kg × ${s.reps}`).join(' · ')}</p>` : ''}
+            <div class="bar-config-row"><label><input type="checkbox" data-field="usesBar" ${block.usesBar ? 'checked' : ''}> Uses a bar</label>
+              ${block.usesBar ? `<label>Bar weight (kg) <input class="bar-weight-input" type="number" min="0" step="any" inputmode="decimal" value="${block.barWeight}" data-field="barWeight"></label><span class="plates-note">Enter combined plates on both sides.</span>` : ''}
+            </div>
+            ${!atLimit || isEditing || hasInput ? `<div class="add-set-row">
+              <div><label for="w-${index}">${block.usesBar ? 'Combined plates (kg)' : 'Weight (kg)'}</label><input type="number" inputmode="decimal" id="w-${index}" min="0" step="any" data-field="inputWeight" value="${esc(block.inputWeight)}" placeholder="e.g. 30"></div>
+              <div><label for="r-${index}">Reps</label><input type="number" inputmode="numeric" id="r-${index}" min="1" step="1" data-field="inputReps" value="${esc(block.inputReps)}" placeholder="e.g. 8"></div>
+              <button class="btn-primary" data-action="add-set" ${atLimit && !isEditing ? 'disabled' : ''}>${isEditing ? 'Update set' : `+ Set ${block.sets.length+1}`}</button>
+            </div>` : ''}
+            <div class="set-tools">
+              ${isEditing ? '<button class="btn-sm" data-action="cancel-set">Cancel edit</button>' : !atLimit && block.sets.length ? '<button class="btn-sm" data-action="repeat-set">Repeat last set</button>' : ''}
+              ${hasInput && !isEditing ? '<button class="btn-sm" data-action="clear-input">Clear entry</button>' : ''}
+            </div>
+            ${block.sets.length ? `<table class="sets-table"><thead><tr><th>Set</th><th>Total kg</th><th>Reps</th><th>Actions</th></tr></thead><tbody>${block.sets.map((s,i) => `<tr><td>${i+1}</td><td>${recordedTotal(s,block)}</td><td>${s.reps}</td><td><button class="btn-sm" data-action="edit-set" data-index="${i}" aria-label="Edit set ${i+1}">Edit</button> <button class="btn-danger-sm" data-action="remove-set" data-index="${i}" aria-label="Remove set ${i+1}">×</button></td></tr>`).join('')}</tbody></table>` : ''}
+            <div class="exercise-footer"><button class="btn-sm" data-action="remove-exercise">Remove exercise</button></div>
+          </div>
         </div>`;
       }).join('');
     }
+    function focusExercise(name, input = false) {
+      const index = Object.keys(state.draft).indexOf(name);
+      if (index < 0) return;
+      const target = document.getElementById(input ? `w-${index}` : `exercise-toggle-${index}`);
+      target?.focus({preventScroll:true});
+      target?.scrollIntoView?.({block:'nearest'});
+    }
+    function afterSetChange(name, wasEditing = false) {
+      const completed = !wasEditing && state.draft[name].sets.length >= MAX_SETS;
+      if (completed) {
+        const names = Object.keys(state.draft), index = names.indexOf(name);
+        expandedExercise = [...names.slice(index+1),...names.slice(0,index)].find(ex => state.draft[ex].sets.length < MAX_SETS) ?? null;
+      } else expandedExercise = name;
+      renderAll();
+      if (completed) {
+        focusExercise(expandedExercise ?? name);
+        toast(`${name}: ${MAX_SETS} sets saved`);
+      } else focusExercise(name, state.draft[name].sets.length < MAX_SETS);
+    }
     function addSet(name) {
+      const block = state.draft[name];
+      if (!block) return;
+      const wasEditing = block.editIndex !== null;
+      if (!wasEditing && block.sets.length >= MAX_SETS) { toast('Three sets maximum per exercise.', 'error'); return; }
       const index = Object.keys(state.draft).indexOf(name);
       const w = document.getElementById(`w-${index}`).value, r = document.getElementById(`r-${index}`).value;
       const plates = Number(w), reps = Number(r);
       if (!w.trim() || !r.trim() || !Number.isFinite(plates) || plates < 0 || !Number.isInteger(reps) || reps < 1) { toast('Use a nonnegative weight and positive whole-number reps.', 'error'); return; }
       if (change(next => {
-        const block = next.draft[name];
-        if (block.editIndex === null) block.sets.push({plates,reps}); else block.sets[block.editIndex] = {plates,reps};
-        block.editIndex = null; block.inputWeight = ''; block.inputReps = '';
-      })) document.getElementById(`w-${index}`).focus();
+        const item = next.draft[name];
+        if (item.editIndex === null) item.sets.push({plates,reps}); else item.sets[item.editIndex] = {plates,reps};
+        item.editIndex = null; item.inputWeight = ''; item.inputReps = '';
+      },false)) afterSetChange(name,wasEditing);
+    }
+    function saveVisibleInputs() {
+      const edits = [];
+      document.querySelectorAll('#session-exercises input[data-field="inputWeight"], #session-exercises input[data-field="inputReps"]').forEach(input => {
+        const name = Object.keys(state.draft)[Number(input.closest('[data-ex-index]').dataset.exIndex)];
+        const field = input.dataset.field;
+        if (state.draft[name][field] !== input.value) edits.push({name,field,value:input.value});
+      });
+      if (!edits.length) return true;
+      return change(next => { edits.forEach(({name,field,value}) => { next.draft[name][field] = value; }); },false);
     }
     function sessionAction(name, action, index) {
       const block = state.draft[name];
+      if (!block) return;
+      if (action === 'toggle-exercise') {
+        // If an input autosave failed, keep its text on screen until it can save.
+        if (!saveVisibleInputs()) return;
+        expandedExercise = expandedExercise === name ? null : name;
+        renderSessionBlocks(); focusExercise(name);
+        return;
+      }
       if (action === 'add-set') return addSet(name);
+      if (action === 'repeat-set') {
+        if (!block.sets.length) return;
+        if (block.sets.length >= MAX_SETS) { toast('Three sets maximum per exercise.', 'error'); return; }
+        if (block.editIndex !== null || block.inputWeight || block.inputReps) { toast('Add or clear the entered set before repeating.', 'error'); return; }
+      }
       if (action === 'remove-exercise' && block.sets.length && !confirm('Remove this exercise and its sets from the draft?')) return;
       if (action === 'remove-set' && !confirm('Remove this set?')) return;
-      change(next => {
+      const saved = change(next => {
         const item = next.draft[name];
         if (action === 'remove-exercise') delete next.draft[name];
         if (action === 'edit-set') { item.editIndex=index; item.inputWeight=String(item.sets[index].plates); item.inputReps=String(item.sets[index].reps); }
-        if (action === 'cancel-set') { item.editIndex=null; item.inputWeight=''; item.inputReps=''; }
+        if (action === 'cancel-set' || action === 'clear-input') { item.editIndex=null; item.inputWeight=''; item.inputReps=''; }
         if (action === 'remove-set') {
           item.sets.splice(index,1);
           if (item.editIndex === index) { item.editIndex=null; item.inputWeight=''; item.inputReps=''; }
           else if (item.editIndex !== null && item.editIndex > index) item.editIndex--;
         }
         if (action === 'repeat-set') item.sets.push({...item.sets[item.sets.length-1]});
-      });
+      },false);
+      if (!saved) return;
+      if (action === 'repeat-set') return afterSetChange(name);
+      if (action === 'edit-set' || action === 'remove-set') expandedExercise = name;
+      renderAll();
+      if (action === 'edit-set') focusExercise(name,true);
     }
     function finishDay() {
       if (!validDate(state.draftDate)) { toast('Pick a valid date.', 'error'); return; }
@@ -923,7 +1022,7 @@
     function renderHistory() {
       const filter = document.getElementById('filter-exercise').value;
       const list = state.sessions.map((s,index) => ({...s,index})).sort((a,b) => b.date.localeCompare(a.date)).filter(s => !filter || s.exercises.some(e => e.name === filter));
-      document.getElementById('history-list').innerHTML = list.length ? list.map(s => `<div class="card"><div class="history-date-heading">${formatDate(s.date)} <button class="btn-sm" data-edit-workout="${s.index}">Edit workout</button></div>${s.exercises.filter(e => !filter || e.name === filter).sort((a,b) => alphabetical(a.name,b.name)).map(e => `<div class="history-ex-name">${esc(e.name)}</div><div class="set-pill-row">${e.sets.map((set,i) => `<div class="set-pill">S${i+1} <span>${set.total} kg × ${set.reps}</span></div>`).join('')}</div>`).join('')}</div>`).join('') : '<div class="empty-state"><p>No workouts found</p></div>';
+      document.getElementById('history-list').innerHTML = list.length ? list.map(s => `<div class="card"><div class="history-date-heading">${formatDate(s.date)} <button class="btn-sm" data-edit-workout="${s.index}">Edit workout</button></div>${s.exercises.filter(e => !filter || e.name === filter).map(e => `<div class="history-ex-name">${esc(e.name)}</div><div class="set-pill-row">${e.sets.map((set,i) => `<div class="set-pill">S${i+1} <span>${set.total} kg × ${set.reps}</span></div>`).join('')}</div>`).join('')}</div>`).join('') : '<div class="empty-state"><p>No workouts found</p></div>';
     }
     // ── Progress ───────────────────────────────────────────────────────────
     function renderProgress() {

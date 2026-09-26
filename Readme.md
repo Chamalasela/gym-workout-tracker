@@ -8,6 +8,8 @@ A lightweight, single-file personal workout tracker. No backend or database: wor
 - Finish a workout with one button; every exercise containing sets is included
 - Edit and repeat sets, and edit completed workouts without replacing the original until saved
 - See the previous workout's sets while logging an exercise
+- Compact exercise cards: one open at a time, with automatic advancement after the third set
+- Alphabetical ordering only in the Log workout exercise picker; logged exercises retain entry order
 - Bar weight support: enter the combined plates on both sides; the app adds the bar
 - History, maximum-weight progress charts, and workout days in the last seven days
 - Dated JSON backups containing history, exercise preferences, and the active draft
@@ -25,6 +27,10 @@ Open http://127.0.0.1:8765/ in your browser. Use a consistent URL and port to re
 ## Saving and editing
 
 Sets save automatically when added, updated, or repeated. The **Finish workout** button commits all logged sets to history in the same storage write that clears the draft. Add or clear any partially entered set before finishing. Empty exercise blocks are not included in history.
+
+Each exercise accepts up to three new sets. After the third set, its card collapses and the next unfinished exercise opens. Tap any card header to reopen it for review or editing. The set-entry controls stay above the logged sets, and **Finish workout** stays accessible at the bottom while scrolling.
+
+Existing backups, history, and drafts with more than three sets are retained in full. You can edit or remove their existing sets, but cannot add another set while the exercise has three or more. These interface changes do not change the storage format or migrate existing data.
 
 Use **Edit workout** in History to load a completed workout for corrections. Finish your current draft first. The original stays in history until **Save workout changes** succeeds; **Cancel workout edits** discards the edits.
 
