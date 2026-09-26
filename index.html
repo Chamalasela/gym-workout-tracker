@@ -3,8 +3,14 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#1D9E75" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="Gym tracker" />
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
+  <link rel="icon" type="image/png" href="./icons/icon-192.png" />
   <title>Personal Gym Workout Tracker</title>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="./vendor/chart.umd.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -501,6 +507,16 @@
     }
     .toast { bottom: calc(110px + env(safe-area-inset-bottom)); }
     .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+    .app-availability { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin: -12px 0 18px; font-size: 12px; color: var(--text-secondary); }
+    .app-availability button { font: inherit; color: var(--teal-600); background: none; border: 0; padding: 8px 0; cursor: pointer; text-decoration: underline; }
+    .install-guide { font-size: 14px; line-height: 1.6; color: var(--text-secondary); }
+    .install-guide summary { cursor: pointer; font-weight: 600; color: var(--text-primary); }
+    .install-guide p, .install-guide ol { margin-top: 12px; }
+    .install-guide ol { padding-left: 22px; }
+    .install-guide li + li { margin-top: 10px; }
+    .install-guide button { margin-top: 12px; }
+    .app-update { margin-bottom: 16px; font-size: 14px; line-height: 1.5; }
+    .app-update button { margin-top: 10px; }
     /* ── Responsive ── */
     @media (max-width: 480px) {
       .add-set-row { grid-template-columns: 1fr 1fr; }
@@ -534,6 +550,15 @@
       </div>
     </div>
 
+    <div class="app-availability">
+      <span id="offline-status" role="status" aria-live="polite">Checking offline access…</span>
+      <button id="open-install-guide" type="button">Install &amp; offline help</button>
+    </div>
+    <div id="app-update" class="confirm-box app-update" hidden>
+      <p>A new version is ready. Update when you have finished your workout.</p>
+      <button id="apply-update" class="btn-sm" type="button">Update app</button>
+      <p id="update-message" role="status" aria-live="polite"></p>
+    </div>
     <div id="storage-status" class="confirm-box" role="alert" hidden></div>
     <button id="recover-raw" class="btn-sm" onclick="exportRawData()" hidden>Download recovery data</button>
 
@@ -603,6 +628,26 @@
     <!-- Data -->
     <div id="tab-data" class="section">
       <div class="card">
+        <details id="install-guide" class="install-guide">
+          <summary>Use as an app on your iPhone</summary>
+          <p id="install-context">Keep using this website, or add it to your Home Screen for an app window of its own.</p>
+          <p><strong>Move your data first:</strong> Safari and a Home Screen app can have separate storage. If the installed app looks empty, your original workouts are still in Safari.</p>
+          <ol>
+            <li>In Safari, use <strong>Download dated backup</strong> below and save the JSON file to Files. Note the workout, set, and draft counts shown with the backup.</li>
+            <li>In Safari’s Share menu (sometimes inside More), choose <strong>Add to Home Screen</strong>. Turn on <strong>Open as Web App</strong> if offered, then tap Add.</li>
+            <li>Open Gym tracker from its new icon while online. Wait for <strong>Offline ready</strong>.</li>
+            <li>If your workouts are missing, open <strong>Data → Choose backup file</strong>, select the saved file, and check the preview counts before tapping <strong>Restore backup</strong>. Restore replaces the data in this app.</li>
+            <li>Check History and the backup counts in the installed app. Keep your JSON file and the Safari copy until you have verified everything.</li>
+          </ol>
+          <button id="install-app" class="btn-primary" type="button" hidden>Install Gym tracker</button>
+          <p id="install-message" role="status" aria-live="polite"></p>
+          <p>After setup, reopen and log workouts without a connection. Your devices and Safari do not automatically sync. Clearing website data can remove workouts and offline access, so keep dated backups.</p>
+          <p id="app-version"></p>
+          <button id="check-update" class="btn-sm" type="button">Check for updates</button>
+          <p id="check-update-message" role="status" aria-live="polite"></p>
+        </details>
+      </div>
+      <div class="card">
         <div class="card-title">Export backup</div>
         <p style="font-size:13px;color:var(--text-secondary);margin-bottom:1rem;">
           Download your history, active draft, and exercise settings as a JSON file. Keep it somewhere safe as a backup.
@@ -615,7 +660,7 @@
       <div class="card">
         <div class="card-title">Restore from backup</div>
         <p style="font-size:13px;color:var(--text-secondary);margin-bottom:1rem;">
-          Upload a previously exported JSON file to restore your data.
+          Choose a previously exported JSON file to restore your data. The file stays on this device.
         </p>
         <label for="file-upload">Choose backup file</label>
         <input type="file" id="file-upload" accept=".json,application/json" onchange="previewRestore(event)" />
@@ -721,6 +766,7 @@
     let chart = null;
     // Card expansion is presentation-only; saved workouts and backups are unchanged.
     let expandedExercise;
+    let setEntryExercise = null;
     let pendingRestore = null;
     let restoreSequence = 0;
     let toastTimer;
@@ -861,7 +907,7 @@
       const ex = document.getElementById('exercise-select').value;
       if (!ex || own(state.draft, ex)) { toast('Exercise already added.', 'error'); return; }
       if (change(next => Object.defineProperty(next.draft, ex, {value:{...metaFor(ex),sets:[],inputWeight:'',inputReps:'',editIndex:null}, enumerable:true, writable:true, configurable:true}),false)) {
-        expandedExercise = ex; renderAll(); focusExercise(ex);
+        setEntryExercise = null; expandedExercise = ex; renderAll(); focusExercise(ex);
       }
     }
     function totalWeight(plates, block) { return +(plates + (block.usesBar ? block.barWeight : 0)).toFixed(6); }
@@ -886,6 +932,7 @@
         const atLimit = block.sets.length >= MAX_SETS;
         const isEditing = block.editIndex !== null;
         const hasInput = block.inputWeight !== '' || block.inputReps !== '';
+        const showEntry = isEditing || hasInput || !atLimit && (!block.sets.length || setEntryExercise === name);
         const summary = block.sets.length > MAX_SETS ? `${block.sets.length} sets saved` : `${block.sets.length} / ${MAX_SETS} sets${atLimit ? ' · Complete' : ''}`;
         const previous = [...state.sessions].filter(s => String(s.id) !== String(state.editingId) && s.date <= state.draftDate).sort((a,b) => b.date.localeCompare(a.date)).find(s => s.exercises.some(e => e.name === name));
         const previousEx = previous?.exercises.find(e => e.name === name);
@@ -899,12 +946,13 @@
             <div class="bar-config-row"><label><input type="checkbox" data-field="usesBar" ${block.usesBar ? 'checked' : ''}> Uses a bar</label>
               ${block.usesBar ? `<label>Bar weight (kg) <input class="bar-weight-input" type="number" min="0" step="any" inputmode="decimal" value="${block.barWeight}" data-field="barWeight"></label><span class="plates-note">Enter combined plates on both sides.</span>` : ''}
             </div>
-            ${!atLimit || isEditing || hasInput ? `<div class="add-set-row">
+            ${showEntry ? `<div class="add-set-row">
               <div><label for="w-${index}">${block.usesBar ? 'Combined plates (kg)' : 'Weight (kg)'}</label><input type="number" inputmode="decimal" id="w-${index}" min="0" step="any" data-field="inputWeight" value="${esc(block.inputWeight)}" placeholder="e.g. 30"></div>
               <div><label for="r-${index}">Reps</label><input type="number" inputmode="numeric" id="r-${index}" min="1" step="1" data-field="inputReps" value="${esc(block.inputReps)}" placeholder="e.g. 8"></div>
               <button class="btn-primary" data-action="add-set" ${atLimit && !isEditing ? 'disabled' : ''}>${isEditing ? 'Update set' : `+ Set ${block.sets.length+1}`}</button>
             </div>` : ''}
             <div class="set-tools">
+              ${!atLimit && !showEntry ? `<button class="btn-sm" data-action="show-set-entry">Add next set (${block.sets.length+1} of ${MAX_SETS})</button>` : ''}
               ${isEditing ? '<button class="btn-sm" data-action="cancel-set">Cancel edit</button>' : !atLimit && block.sets.length ? '<button class="btn-sm" data-action="repeat-set">Repeat last set</button>' : ''}
               ${hasInput && !isEditing ? '<button class="btn-sm" data-action="clear-input">Clear entry</button>' : ''}
             </div>
@@ -922,6 +970,7 @@
       target?.scrollIntoView?.({block:'nearest'});
     }
     function afterSetChange(name, wasEditing = false) {
+      setEntryExercise = null;
       const completed = !wasEditing && state.draft[name].sets.length >= MAX_SETS;
       if (completed) {
         const names = Object.keys(state.draft), index = names.indexOf(name);
@@ -931,7 +980,7 @@
       if (completed) {
         focusExercise(expandedExercise ?? name);
         toast(`${name}: ${MAX_SETS} sets saved`);
-      } else focusExercise(name, state.draft[name].sets.length < MAX_SETS);
+      } else focusExercise(name);
     }
     function addSet(name) {
       const block = state.draft[name];
@@ -969,6 +1018,12 @@
         return;
       }
       if (action === 'add-set') return addSet(name);
+      if (action === 'show-set-entry') {
+        if (block.sets.length >= MAX_SETS || !saveVisibleInputs()) return;
+        setEntryExercise = name; expandedExercise = name;
+        renderSessionBlocks(); focusExercise(name,true);
+        return;
+      }
       if (action === 'repeat-set') {
         if (!block.sets.length) return;
         if (block.sets.length >= MAX_SETS) { toast('Three sets maximum per exercise.', 'error'); return; }
@@ -990,6 +1045,7 @@
       },false);
       if (!saved) return;
       if (action === 'repeat-set') return afterSetChange(name);
+      if (action === 'cancel-set' || action === 'clear-input' || action === 'remove-exercise') setEntryExercise = null;
       if (action === 'edit-set' || action === 'remove-set') expandedExercise = name;
       renderAll();
       if (action === 'edit-set') focusExercise(name,true);
@@ -1117,10 +1173,19 @@
       } else { chartCard.style.display = 'none'; if (dates.length >= 2) emptyEl.textContent = 'Chart unavailable offline. Your workout statistics are still shown above.'; }
     }
 
+    function dataSummary(data) {
+      const count = (value, label) => `${value} ${label}${value === 1 ? '' : 's'}`;
+      const sets = data.sessions.reduce((n,s) => n+s.exercises.reduce((m,e)=>m+e.sets.length,0),0);
+      const draftExercises = Object.values(data.draft);
+      const draftSets = draftExercises.reduce((n,e)=>n+e.sets.length,0);
+      const latest = data.sessions.reduce((date,session)=>session.date > date ? session.date : date,'');
+      return `${count(data.sessions.length,'workout')} · ${count(sets,'logged set')} · ${count(data.exercises.length,'catalog exercise')} · Latest workout: ${latest ? formatDate(latest) : 'none'} · ${count(draftExercises.length,'draft exercise')} · ${count(draftSets,'draft set')}`;
+    }
     function renderExportSummary() {
-      const sets = state.sessions.reduce((n,s) => n+s.exercises.reduce((m,e)=>m+e.sets.length,0),0);
-      const draftSets = Object.values(state.draft).reduce((n,e)=>n+e.sets.length,0);
-      document.getElementById('export-summary').textContent = `${state.sessions.length} workout${state.sessions.length === 1 ? '' : 's'} · ${sets} sets · ${draftSets} draft sets`;
+      const summary = dataSummary(state);
+      document.getElementById('export-summary').textContent = storageBlocked
+        ? `Some saved data could not be read; these counts may be incomplete. ${summary}. Export downloads recovery data that requires manual recovery, not a normal backup for import.`
+        : summary;
       try { document.getElementById('review-legacy').hidden = localStorage.getItem('gym_sessions') === null && localStorage.getItem('gym_draft') === null; } catch { document.getElementById('review-legacy').hidden = true; }
       try { document.getElementById('undo-restore').hidden = !localStorage.getItem(RECOVERY_KEY); } catch { document.getElementById('undo-restore').hidden=true; }
     }
@@ -1131,14 +1196,29 @@
       setTimeout(()=>URL.revokeObjectURL(url),10000);
     }
     function exportData() {
-      downloadJSON({...state,exportedAt:new Date().toISOString()},`gym-backup-${localDate()}-${Date.now()}.json`);
-      toast('Backup export started. Keep the file in a safe place.');
+      if (storageBlocked) return exportRawData();
+      const inputsSaved = saveVisibleInputs();
+      try {
+        downloadJSON({...state,exportedAt:new Date().toISOString()},`gym-backup-${localDate()}-${Date.now()}.json`);
+      } catch {
+        toast('Backup could not be exported. Your saved workout data is still on this device.', 'error');
+        return false;
+      }
+      if (inputsSaved) toast('Backup export started. Keep the file in a safe place.');
+      else {
+        const message = 'Backup export started from this tab’s last saved data. Unsaved on-screen input is not included. Keep this page open.';
+        storageMessage(message);
+        toast(message, 'error');
+      }
+      return true;
     }
     function exportRawData() {
       try {
         const raw = Object.fromEntries([STORE_KEY,RECOVERY_KEY,'gym_unreadable_recovery','gym_sessions','gym_exercises','gym_ex_meta','gym_draft'].map(key=>[key,localStorage.getItem(key)]));
         downloadJSON({raw,exportedAt:new Date().toISOString()},`gym-recovery-${localDate()}.json`);
-      } catch { toast('Browser storage is unavailable.', 'error'); }
+        toast('Recovery export started. This file needs manual recovery; it cannot be imported as a normal backup.');
+        return true;
+      } catch { toast('Recovery data could not be exported. Keep this page open.', 'error'); return false; }
     }
     function restoreError(message) {
       const el = document.getElementById('restore-error');
@@ -1147,11 +1227,9 @@
     }
     function showRestorePreview(clean, source = 'This backup', note = '') {
       pendingRestore = clean;
-      const sets = clean.sessions.reduce((n,s)=>n+s.exercises.reduce((m,e)=>m+e.sets.length,0),0);
-      const draftSets = Object.values(clean.draft).reduce((n,e)=>n+e.sets.length,0);
       const el = document.getElementById('restore-preview');
       el.style.display = 'block';
-      el.innerHTML = `<div class="confirm-box"><p>${esc(source)} contains ${clean.sessions.length} workouts, ${sets} sets, ${clean.exercises.length} exercises, and ${draftSets} draft sets. ${esc(note)} It replaces your history, settings, and active draft. A recovery copy will be kept on this device.</p><div class="confirm-btns"><button class="btn-sm" onclick="cancelRestore()">Cancel</button><button class="btn-danger" onclick="confirmRestore()">Restore backup</button></div></div>`;
+      el.innerHTML = `<div class="confirm-box"><p>${esc(source)} contains: ${esc(dataSummary(clean))}. ${esc(note)} It replaces your history, settings, and active draft. A recovery copy will be kept on this device.</p><div class="confirm-btns"><button class="btn-sm" onclick="cancelRestore()">Cancel</button><button class="btn-danger" onclick="confirmRestore()">Restore backup</button></div></div>`;
     }
     function previewLegacyRestore() {
       cancelRestore();
@@ -1250,7 +1328,16 @@
     window.addEventListener('storage',event => {
       if (event.key === STORE_KEY || event.key === null) storageMessage('Workout data changed in another tab. Reload before making changes.');
     });
+    // The offline layer only reads this guard; it never reads or writes workout storage.
+    window.gymUpdateBlockReason = function () {
+      if (storageBlocked) return 'Resolve the storage warning and keep a recovery backup before updating.';
+      if (Object.keys(state.draft).length || state.editingId !== null) return 'Finish your current workout or workout edits before updating.';
+      if (pendingRestore || document.getElementById('file-upload').value) return 'Finish or cancel the backup restore before updating.';
+      if (document.getElementById('new-exercise').value.trim()) return 'Create or clear the new exercise name before updating.';
+      return '';
+    };
     loadState(); renderAll();
   </script>
+  <script src="./pwa.js"></script>
 </body>
 </html>

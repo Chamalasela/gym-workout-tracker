@@ -387,3 +387,121 @@ test('switching cards does not discard on-screen input when its autosave fails',
   assert.equal(a.run('expandedExercise'),'Squat');assert.deepEqual(a.read('state'),before);assert.equal(a.values.get('gym_state_v4'),saved);
   assert.match(a.element('storage-status').textContent,/Could not save/);
 });
+
+test('backup export includes pending visible input after it can be saved',()=>{
+  const a=app();draft(a);set(a);
+  a.run(`document.querySelectorAll = selector => selector.includes('data-field') ? [{value:'42.5',dataset:{field:'inputWeight'},closest(){return {dataset:{exIndex:'0'}};}}] : [];
+    downloadJSON = (data,filename) => { window.exportCapture={data,filename}; };
+    exportData();`);
+  assert.equal(a.read('window.exportCapture.data.draft["Bench press"].inputWeight'),'42.5');
+  assert.equal(JSON.parse(a.values.get('gym_state_v4')).draft['Bench press'].inputWeight,'42.5');
+  assert.equal(a.read('window.exportCapture.data.version'),4);
+  assert.match(a.read('window.exportCapture.filename'),/^gym-backup-.*\.json$/);
+  assert.match(a.element('toast').textContent,/export started/);
+});
+test('failed input autosave still allows a clearly labeled export of the last saved data',()=>{
+  const a=app();draft(a);set(a);
+  const before=a.read('state'),stored=a.values.get('gym_state_v4');
+  a.run(`document.querySelectorAll = selector => selector.includes('data-field') ? [{value:'42.5',dataset:{field:'inputWeight'},closest(){return {dataset:{exIndex:'0'}};}}] : [];
+    downloadJSON = (data,filename) => { window.exportCapture={data,filename}; };`);
+  a.fail();assert.equal(a.run('exportData()'),true);
+  const {exportedAt,...exported}=a.read('window.exportCapture.data');
+  assert.ok(exportedAt);
+  assert.deepEqual(exported,before);
+  assert.deepEqual(a.read('state'),before);
+  assert.equal(a.values.get('gym_state_v4'),stored);
+  assert.equal(a.run('document.querySelectorAll("data-field")[0].value'),'42.5');
+  assert.match(a.element('storage-status').textContent,/Unsaved on-screen input is not included/);
+  assert.match(a.element('toast').textContent,/last saved data/);
+});
+test('unreadable storage exports original recovery data instead of a misleading partial backup',()=>{
+  for(const seed of [{gym_sessions:'{broken'},{gym_sessions:JSON.stringify(backup.sessions),gym_draft:'{broken'}]) {
+    const a=app(seed),before=Object.fromEntries(a.values);
+    a.run('downloadJSON = (data,filename) => { window.exportCapture={data,filename}; };exportData()');
+    const exported=a.read('window.exportCapture.data');
+    assert.equal(exported.version,undefined);
+    for(const [key,value] of Object.entries(seed)) assert.equal(exported.raw[key],value);
+    assert.match(a.read('window.exportCapture.filename'),/^gym-recovery-.*\.json$/);
+    assert.match(a.element('toast').textContent,/manual recovery/);
+    assert.match(a.element('export-summary').textContent,/counts may be incomplete/);
+    assert.deepEqual(Object.fromEntries(a.values),before);
+    assert.equal(a.run('storageBlocked'),true);
+  }
+});
+test('download failures leave history and saved drafts intact and report the failure',()=>{
+  const a=app({gym_sessions:JSON.stringify(backup.sessions)});draft(a);set(a);
+  const before=a.read('state'),stored=a.values.get('gym_state_v4');
+  a.run('downloadJSON = () => { throw new Error("Download unavailable"); }');
+  assert.equal(a.run('exportData()'),false);
+  assert.deepEqual(a.read('state'),before);
+  assert.equal(a.values.get('gym_state_v4'),stored);
+  assert.match(a.element('toast').textContent,/could not be exported/);
+  const blocked=app({gym_sessions:'{broken'});
+  blocked.run('downloadJSON = () => { throw new Error("Download unavailable"); }');
+  assert.equal(blocked.run('exportData()'),false);
+  assert.equal(blocked.values.get('gym_sessions'),'{broken');
+  assert.match(blocked.element('toast').textContent,/Recovery data could not be exported/);
+});
+test('export and restore summaries use consistent counts and keep history separate from the draft',()=>{
+  const sessions=[oldWorkout,{...oldWorkout,id:2}];
+  const a=app({gym_sessions:JSON.stringify(sessions),gym_exercises:JSON.stringify(['Bench press','Squat','New movement'])});
+  draft(a);set(a);draft(a,'Squat');
+  const summary=a.element('export-summary').textContent;
+  for(const expected of ['2 workouts','2 logged sets','3 catalog exercises','Latest workout: 18/09/2026','2 draft exercises','1 draft set']) assert.ok(summary.includes(expected),expected);
+  const stored=a.values.get('gym_state_v4');
+  a.run('showRestorePreview(clone(state))');
+  assert.ok(a.element('restore-preview').innerHTML.includes(summary));
+  assert.equal(a.values.get('gym_state_v4'),stored);
+  const empty=app();assert.match(empty.element('export-summary').textContent,/Latest workout: none/);
+});
+test('updates are blocked for drafts, history edits, restore selection, unreadable storage and uncreated exercise names',()=>{
+  const clean=app();assert.equal(clean.run('window.gymUpdateBlockReason()'),'');
+  draft(clean);assert.match(clean.run('window.gymUpdateBlockReason()'),/workout/);
+  const editing=app({gym_sessions:JSON.stringify(backup.sessions)});editing.run('editWorkout(0)');
+  assert.match(editing.run('window.gymUpdateBlockReason()'),/workout/);
+  const restoring=app();restoring.run(`pendingRestore=normalizeData(${JSON.stringify(backup)})`);
+  assert.match(restoring.run('window.gymUpdateBlockReason()'),/restore/);
+  restoring.run('cancelRestore()');restoring.element('file-upload').value='selected-backup.json';
+  assert.match(restoring.run('window.gymUpdateBlockReason()'),/restore/);
+  const creating=app();creating.element('new-exercise').value='New lift';
+  assert.match(creating.run('window.gymUpdateBlockReason()'),/exercise name/);
+  const unreadable=app({gym_sessions:'{broken'});
+  assert.match(unreadable.run('window.gymUpdateBlockReason()'),/storage warning/);
+  for(const a of [clean,editing,restoring,creating,unreadable]) {
+    const before=a.read('state'),stored=Object.fromEntries(a.values);
+    a.run('window.gymUpdateBlockReason()');
+    assert.deepEqual(a.read('state'),before);assert.deepEqual(Object.fromEntries(a.values),stored);
+  }
+});
+
+test('saved sets tuck away the large entry form; reopening it does not write or reorder data',()=>{
+  const a=app();draft(a);set(a);
+  assert.ok(!a.element('session-exercises').innerHTML.includes('class="add-set-row"'));
+  assert.match(a.element('session-exercises').innerHTML,/Add next set \(2 of 3\)/);
+  const before=a.read('state'),stored=a.values.get('gym_state_v4');
+  a.run('sessionAction("Bench press","show-set-entry",0)');
+  assert.ok(a.element('session-exercises').innerHTML.includes('class="add-set-row"'));
+  assert.deepEqual(a.read('state'),before);assert.equal(a.values.get('gym_state_v4'),stored);
+  set(a,'35','7');
+  assert.ok(!a.element('session-exercises').innerHTML.includes('class="add-set-row"'));
+  assert.match(a.element('session-exercises').innerHTML,/Add next set \(3 of 3\)/);
+  const reloaded=app(Object.fromEntries(a.values));
+  assert.ok(!reloaded.element('session-exercises').innerHTML.includes('class="add-set-row"'));
+  assert.equal(reloaded.read('state.draft["Bench press"].sets').length,2);
+  a.run('sessionAction("Bench press","repeat-set",0)');
+  assert.ok(!a.element('session-exercises').innerHTML.includes('data-action="show-set-entry"'));
+  assert.equal(a.read('state.draft["Bench press"].sets').length,3);
+});
+test('restored partial input and edits stay visible, and failed set saves never tuck away the form',()=>{
+  const a=app();draft(a);set(a);
+  a.run('sessionAction("Bench press","show-set-entry",0);change(next=>{next.draft["Bench press"].inputWeight="42.5";},false)');
+  const b=app(Object.fromEntries(a.values));
+  assert.ok(b.element('session-exercises').innerHTML.includes('class="add-set-row"'));
+  assert.equal(b.read('state.draft["Bench press"].inputWeight'),'42.5');
+  a.run('sessionAction("Bench press","edit-set",0)');
+  assert.match(a.element('session-exercises').innerHTML,/Update set/);
+  const stored=a.values.get('gym_state_v4');a.fail();set(a,'40','6');
+  assert.match(a.element('session-exercises').innerHTML,/Update set/);
+  assert.equal(a.read('state.draft["Bench press"].sets[0].plates'),30);
+  assert.equal(a.values.get('gym_state_v4'),stored);
+});
